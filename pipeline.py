@@ -9,6 +9,7 @@ import requests
 from xgboost import XGBClassifier
 
 import espn_client
+import sportsdataverse_client as sdv_client
 
 API_KEY = os.getenv("ODDS_API_KEY")
 SPORT = "basketball_wnba"
@@ -16,6 +17,7 @@ BASE_URL = "https://api.the-odds-api.com/v4"
 REGIONS = "us"
 ODDS_FORMAT = "american"
 EVENT_WINDOW_HOURS = 36  # covers a full day's slate regardless of ET/UTC rollover
+SEASON = datetime.now(timezone.utc).year
 
 # Player prop market keys -> the "Bet Type" labels used in wnba_historical_props.csv
 MARKET_TO_BET_TYPE = {
@@ -43,7 +45,12 @@ OUTPUT_DIR = os.path.join("frontend", "public")
 # wnba_historical_props.csv, shifted so a game never sees its own result) and for
 # live inference (from ESPN gamelogs), so - unlike DTM - it's an honest feature.
 RECENT_FORM_WINDOW = 5
-FEATURES = ["Line", "Odds", "BE Prob", "Recent Form"]
+
+# Team Pace / Opp Def Rating / Back to Back come from sportsdataverse's WNBA box
+# score data (see sportsdataverse_client.py). Same leak-free-training /
+# season-to-date-inference split as Recent Form. Note: that data lags live by a
+# few days, so these can be slightly stale close to "now" - documented in the README.
+FEATURES = ["Line", "Odds", "BE Prob", "Recent Form", "Team Pace", "Opp Def Rating", "Back to Back"]
 
 
 def implied_probability(odds):
@@ -148,45 +155,108 @@ def fetch_todays_odds():
     return pd.DataFrame(all_rows)
 
 
+def _resolve_matchup_team_ids(matchup, alias_map):
+    if not matchup or " @ " not in matchup:
+        return None, None
+    away_name, home_name = matchup.split(" @ ", 1)
+    return alias_map.get(espn_client.normalize_name(away_name)), alias_map.get(espn_client.normalize_name(home_name))
+
+
 def enrich_with_live_signals(todays_slate):
-    """Adds 'Recent Form' (model feature) and 'Injury Status' (display-only) columns
-    from ESPN. Best-effort: any failure leaves those columns empty rather than
-    breaking the pipeline, since ESPN's endpoints here are undocumented."""
+    """Adds model features ('Recent Form', 'Team Pace', 'Opp Def Rating', 'Back
+    to Back') and a display-only 'Injury Status' column, from ESPN and
+    sportsdataverse. Best-effort throughout: any failure leaves the relevant
+    columns empty rather than breaking the pipeline, since none of these
+    sources are officially documented/versioned APIs."""
     todays_slate["Recent Form"] = np.nan
+    todays_slate["Team Pace"] = np.nan
+    todays_slate["Opp Def Rating"] = np.nan
+    todays_slate["Back to Back"] = np.nan
     todays_slate["Injury Status"] = None
 
     player_id_map = espn_client.fetch_player_id_map()
     if not player_id_map:
-        print("  ⚠️ Could not load ESPN player rosters; skipping recent form/injury enrichment.")
+        print("  ⚠️ Could not load ESPN player rosters; skipping recent form/injury/team-context enrichment.")
         return todays_slate
 
     injury_map = espn_client.fetch_injury_status_map()
 
+    team_box = sdv_client.fetch_team_box(SEASON)
+    team_snapshot = {}
+    alias_map = {}
+    if team_box is not None:
+        team_box = sdv_client.add_team_game_features(team_box)
+        team_snapshot = sdv_client.team_season_snapshot(team_box)
+        alias_map = sdv_client.team_name_alias_map(team_box)
+    else:
+        print("  ⚠️ Could not load sportsdataverse team box scores; skipping team-context enrichment.")
+
+    matchup_team_ids_cache = {}
     recent_games_cache = {}
     recent_form_values = []
+    team_pace_values = []
+    opp_def_values = []
+    back_to_back_values = []
     injury_values = []
+
     for _, row in todays_slate.iterrows():
         norm_name = espn_client.normalize_name(row["Player"])
         injury_values.append(injury_map.get(norm_name))
 
-        athlete_id = player_id_map.get(norm_name)
+        player_info = player_id_map.get(norm_name)
+        athlete_id = player_info["athlete_id"] if player_info else None
+
         if not athlete_id:
             recent_form_values.append(None)
-            continue
+        else:
+            if athlete_id not in recent_games_cache:
+                recent_games_cache[athlete_id] = espn_client.fetch_recent_games(athlete_id, RECENT_FORM_WINDOW)
+                time.sleep(0.15)
+            recent_form_values.append(
+                espn_client.recent_form_for_bet_type(recent_games_cache[athlete_id], row["Bet Type"])
+            )
 
-        if athlete_id not in recent_games_cache:
-            recent_games_cache[athlete_id] = espn_client.fetch_recent_games(athlete_id, RECENT_FORM_WINDOW)
-            time.sleep(0.15)
+        team_pace = opp_def = back_to_back = None
+        if player_info and team_snapshot:
+            team_id = player_info["team_id"]
+            team_stats = team_snapshot.get(team_id)
+            if team_stats:
+                team_pace = team_stats["pace"]
+                commence = row.get("Commence Time")
+                if commence and pd.notna(team_stats["last_game_date"]):
+                    game_date = pd.to_datetime(commence).tz_localize(None).normalize()
+                    gap_days = (game_date - team_stats["last_game_date"]).days
+                    back_to_back = 1.0 if gap_days == 1 else 0.0
 
-        recent_form_values.append(
-            espn_client.recent_form_for_bet_type(recent_games_cache[athlete_id], row["Bet Type"])
-        )
+            matchup = row.get("Matchup")
+            if matchup not in matchup_team_ids_cache:
+                matchup_team_ids_cache[matchup] = _resolve_matchup_team_ids(matchup, alias_map)
+            away_id, home_id = matchup_team_ids_cache[matchup]
+            opponent_id = None
+            if away_id == team_id:
+                opponent_id = home_id
+            elif home_id == team_id:
+                opponent_id = away_id
+            if opponent_id is not None:
+                opp_stats = team_snapshot.get(opponent_id)
+                if opp_stats:
+                    opp_def = opp_stats["pts_allowed"]
+
+        team_pace_values.append(team_pace)
+        opp_def_values.append(opp_def)
+        back_to_back_values.append(back_to_back)
 
     todays_slate["Recent Form"] = pd.to_numeric(pd.Series(recent_form_values), errors="coerce")
+    todays_slate["Team Pace"] = pd.to_numeric(pd.Series(team_pace_values), errors="coerce")
+    todays_slate["Opp Def Rating"] = pd.to_numeric(pd.Series(opp_def_values), errors="coerce")
+    todays_slate["Back to Back"] = pd.to_numeric(pd.Series(back_to_back_values), errors="coerce")
     todays_slate["Injury Status"] = injury_values
 
     matched = todays_slate["Recent Form"].notna().sum()
     print(f"  \U0001fa7a Recent form resolved for {matched}/{len(todays_slate)} prop rows.")
+    team_matched = todays_slate["Team Pace"].notna().sum()
+    opp_matched = todays_slate["Opp Def Rating"].notna().sum()
+    print(f"  \U0001f3c0 Team pace resolved for {team_matched}/{len(todays_slate)}, opp defense for {opp_matched}/{len(todays_slate)} prop rows.")
     return todays_slate
 
 
@@ -207,6 +277,52 @@ def load_history():
     history["Recent Form"] = history.groupby(["Player", "Bet Type"])["Stat Value"].transform(
         lambda s: s.shift(1).rolling(RECENT_FORM_WINDOW, min_periods=1).mean()
     )
+    return history
+
+
+def enrich_history_with_team_context(history):
+    """Adds 'Team Pace', 'Opp Def Rating', 'Back to Back' to historical rows by
+    joining sportsdataverse's player_box (for player -> team/opponent on that
+    date) and team_box (for that team's leak-free pregame pace/defense/rest).
+    Best-effort: rows that can't be joined (e.g. name mismatch, or a date not
+    yet covered by sportsdataverse's - typically few-day-lagged - release) get
+    NaN, same as everything else in this pipeline."""
+    history["Team Pace"] = np.nan
+    history["Opp Def Rating"] = np.nan
+    history["Back to Back"] = np.nan
+
+    team_box = sdv_client.fetch_team_box(SEASON)
+    player_box = sdv_client.fetch_player_box(SEASON)
+    if team_box is None or player_box is None:
+        print("  ⚠️ Could not load sportsdataverse data; skipping historical team-context features.")
+        return history
+
+    team_box = sdv_client.add_team_game_features(team_box)
+    pregame = sdv_client.team_pregame_lookup(team_box)
+    player_team_lookup = sdv_client.build_player_team_lookup(player_box)
+
+    team_pace_values, opp_def_values, back_to_back_values = [], [], []
+    for row in history.itertuples():
+        team_opp = player_team_lookup.get((espn_client.normalize_name(row.Player), row.Date))
+        if not team_opp:
+            team_pace_values.append(None)
+            opp_def_values.append(None)
+            back_to_back_values.append(None)
+            continue
+
+        team_id, opponent_id = team_opp
+        team_stats = pregame.get((team_id, row.Date))
+        opp_stats = pregame.get((opponent_id, row.Date))
+        team_pace_values.append(team_stats[0] if team_stats else None)
+        opp_def_values.append(opp_stats[1] if opp_stats else None)
+        back_to_back_values.append(team_stats[2] if team_stats else None)
+
+    history["Team Pace"] = pd.to_numeric(pd.Series(team_pace_values), errors="coerce")
+    history["Opp Def Rating"] = pd.to_numeric(pd.Series(opp_def_values), errors="coerce")
+    history["Back to Back"] = pd.to_numeric(pd.Series(back_to_back_values), errors="coerce")
+
+    matched = history["Team Pace"].notna().sum()
+    print(f"  🏀 Team context resolved for {matched}/{len(history)} historical rows.")
     return history
 
 
@@ -275,6 +391,15 @@ def run_prediction_engine():
     if history.empty:
         return
 
+    print("\U0001f3c0 Adding historical team-context features (pace/defense/rest)...")
+    try:
+        history = enrich_history_with_team_context(history)
+    except Exception as exc:  # sportsdataverse's data isn't a stable/versioned API either
+        print(f"  ⚠️ Historical team-context enrichment failed, continuing without it: {exc}")
+        history["Team Pace"] = np.nan
+        history["Opp Def Rating"] = np.nan
+        history["Back to Back"] = np.nan
+
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     summary = build_history_summary(history)
@@ -294,6 +419,9 @@ def run_prediction_engine():
     except Exception as exc:  # ESPN's endpoints are undocumented; never let this break the run
         print(f"  ⚠️ Live signal enrichment failed, continuing without it: {exc}")
         todays_slate["Recent Form"] = np.nan
+        todays_slate["Team Pace"] = np.nan
+        todays_slate["Opp Def Rating"] = np.nan
+        todays_slate["Back to Back"] = np.nan
         todays_slate["Injury Status"] = None
 
     print(f"\U0001f3af Training model on {len(history)} historical rows...")
