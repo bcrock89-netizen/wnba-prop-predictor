@@ -80,7 +80,9 @@ def _flatten_roster_athletes(roster_json):
 
 
 def fetch_player_id_map():
-    """Returns {normalized_player_name: espn_athlete_id} across all WNBA rosters."""
+    """Returns {normalized_player_name: {"athlete_id": ..., "team_id": ...}}
+    across all WNBA rosters. team_id uses ESPN's numbering, which matches
+    sportsdataverse's team_id (both are sourced from the same ESPN data)."""
     id_map = {}
     for team_id in fetch_team_ids():
         roster = _get(f"{BASE}/teams/{team_id}/roster")
@@ -90,7 +92,7 @@ def fetch_player_id_map():
             name = athlete.get("displayName") or athlete.get("fullName")
             athlete_id = athlete.get("id")
             if name and athlete_id:
-                id_map[normalize_name(name)] = athlete_id
+                id_map[normalize_name(name)] = {"athlete_id": athlete_id, "team_id": int(team_id)}
         time.sleep(0.2)
     return id_map
 

@@ -311,6 +311,11 @@ function injuryBadgeHtml(status) {
   return `<span class="badge ${cls}">${status}</span>`;
 }
 
+function backToBackBadgeHtml(flag) {
+  if (flag !== 1 && flag !== 1.0) return "";
+  return `<span class="badge warning" title="Team is on the second night of a back-to-back">B2B</span>`;
+}
+
 function fmtTime(iso) {
   try {
     return new Date(iso).toLocaleString(undefined, {
@@ -435,7 +440,7 @@ function renderPredictions(predictions) {
           <tbody>
             ${filtered.map(r => `
               <tr>
-                <td class="player">${r.Player}${injuryBadgeHtml(r["Injury Status"])}</td>
+                <td class="player">${r.Player}${injuryBadgeHtml(r["Injury Status"])}${backToBackBadgeHtml(r["Back to Back"])}</td>
                 <td class="matchup">${r.Matchup || ""}</td>
                 <td>${r["Bet Type"]}</td>
                 <td>${r.Side}</td>
