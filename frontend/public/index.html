@@ -17,6 +17,8 @@
     --border:         rgba(11,11,11,0.10);
     --series-1:       #2a78d6;
     --status-good:    #0ca30c;
+    --status-warning: #fab219;
+    --status-serious: #ec835a;
     --status-critical:#d03b3b;
     --delta-good:     #006300;
   }
@@ -33,6 +35,8 @@
       --border:         rgba(255,255,255,0.10);
       --series-1:       #3987e5;
       --status-good:    #0ca30c;
+      --status-warning: #fab219;
+      --status-serious: #ec835a;
       --status-critical:#e66767;
       --delta-good:     #0ca30c;
     }
@@ -49,6 +53,8 @@
     --border:         rgba(255,255,255,0.10);
     --series-1:       #3987e5;
     --status-good:    #0ca30c;
+    --status-warning: #fab219;
+    --status-serious: #ec835a;
     --status-critical:#e66767;
     --delta-good:     #0ca30c;
   }
@@ -197,6 +203,31 @@
   td.matchup { color: var(--text-muted); font-size: 12px; font-variant-numeric: normal; }
   .edge.good { color: var(--delta-good); font-weight: 600; }
   .edge.critical { color: var(--status-critical); }
+  .form-cell { color: var(--text-secondary); }
+
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+    padding: 3px 7px;
+    border-radius: 999px;
+    margin-left: 6px;
+    vertical-align: middle;
+    white-space: nowrap;
+  }
+  .badge.critical { background: rgba(208,59,59,0.16); color: var(--status-critical); }
+  .badge.serious  { background: rgba(236,131,90,0.18); color: var(--status-serious); }
+  .badge.warning  { background: rgba(250,178,25,0.20); color: var(--status-warning); }
+  .badge.muted    { background: var(--gridline); color: var(--text-secondary); }
+
+  .filters label.checkbox {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: 14px;
+    color: var(--text-secondary);
+  }
 
   .table-scroll { overflow-x: auto; }
 
@@ -259,6 +290,25 @@ function fmtMoney(x) {
 
 function fmtOdds(o) {
   return o > 0 ? "+" + o : String(o);
+}
+
+function fmtForm(x) {
+  return (x === null || x === undefined || Number.isNaN(x)) ? "—" : x.toFixed(1);
+}
+
+function injuryBadgeClass(status) {
+  if (!status) return null;
+  const s = status.toLowerCase();
+  if (s.includes("out")) return "critical";
+  if (s.includes("doubtful")) return "serious";
+  if (s.includes("questionable") || s.includes("day-to-day") || s.includes("day to day")) return "warning";
+  return "muted";
+}
+
+function injuryBadgeHtml(status) {
+  const cls = injuryBadgeClass(status);
+  if (!cls) return "";
+  return `<span class="badge ${cls}">${status}</span>`;
 }
 
 function fmtTime(iso) {
@@ -348,6 +398,7 @@ function renderPredictions(predictions) {
   heading.textContent = `Today's predictions (${rows.length})`;
 
   const betTypes = [...new Set(rows.map(r => r["Bet Type"]))].sort();
+  const outCount = rows.filter(r => injuryBadgeClass(r["Injury Status"]) === "critical").length;
   const filterHtml = `
     <div class="filters">
       <label for="bet-type-filter">Bet type</label>
@@ -355,6 +406,10 @@ function renderPredictions(predictions) {
         <option value="">All (${rows.length})</option>
         ${betTypes.map(bt => `<option value="${bt}">${bt}</option>`).join("")}
       </select>
+      <label class="checkbox">
+        <input type="checkbox" id="hide-out-filter" ${outCount ? "" : "disabled"} />
+        Hide players ruled Out${outCount ? ` (${outCount})` : ""}
+      </label>
     </div>
   `;
 
@@ -369,6 +424,7 @@ function renderPredictions(predictions) {
               <th>Bet type</th>
               <th>Side</th>
               <th>Line</th>
+              <th>Form (L5)</th>
               <th>Odds</th>
               <th>Win prob.</th>
               <th>BE prob.</th>
@@ -379,11 +435,12 @@ function renderPredictions(predictions) {
           <tbody>
             ${filtered.map(r => `
               <tr>
-                <td class="player">${r.Player}</td>
+                <td class="player">${r.Player}${injuryBadgeHtml(r["Injury Status"])}</td>
                 <td class="matchup">${r.Matchup || ""}</td>
                 <td>${r["Bet Type"]}</td>
                 <td>${r.Side}</td>
                 <td>${r.Line}</td>
+                <td class="form-cell">${fmtForm(r["Recent Form"])}</td>
                 <td>${fmtOdds(r.Odds)}</td>
                 <td>${fmtPct(r["Win Probability"])}</td>
                 <td>${fmtPct(r["BE Prob"])}</td>
@@ -397,14 +454,20 @@ function renderPredictions(predictions) {
     `;
   }
 
-  body.innerHTML = filterHtml + tableHtml(rows);
-
-  document.getElementById("bet-type-filter").addEventListener("change", (e) => {
-    const val = e.target.value;
-    const filtered = val ? rows.filter(r => r["Bet Type"] === val) : rows;
+  function applyFilters() {
+    const betType = document.getElementById("bet-type-filter").value;
+    const hideOut = document.getElementById("hide-out-filter").checked;
+    let filtered = betType ? rows.filter(r => r["Bet Type"] === betType) : rows;
+    if (hideOut) {
+      filtered = filtered.filter(r => injuryBadgeClass(r["Injury Status"]) !== "critical");
+    }
     const scroll = body.querySelector(".table-scroll");
     scroll.outerHTML = tableHtml(filtered);
-  });
+  }
+
+  body.innerHTML = filterHtml + tableHtml(rows);
+  document.getElementById("bet-type-filter").addEventListener("change", applyFilters);
+  document.getElementById("hide-out-filter").addEventListener("change", applyFilters);
 }
 
 async function main() {

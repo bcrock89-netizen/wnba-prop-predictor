@@ -3,9 +3,12 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 
+import numpy as np
 import pandas as pd
 import requests
 from xgboost import XGBClassifier
+
+import espn_client
 
 API_KEY = os.getenv("ODDS_API_KEY")
 SPORT = "basketball_wnba"
@@ -34,7 +37,13 @@ OUTPUT_DIR = os.path.join("frontend", "public")
 # (it's not a consistent function of Odds/BE Prob in the sample data), so it's left
 # out of the model until its true derivation is confirmed. Line/Odds/BE Prob are
 # well-defined and computable identically at training time and inference time.
-FEATURES = ["Line", "Odds", "BE Prob"]
+#
+# Recent Form = average actual Stat Value over a player's last RECENT_FORM_WINDOW
+# games in the same Bet Type. Computed identically for training (rolling over
+# wnba_historical_props.csv, shifted so a game never sees its own result) and for
+# live inference (from ESPN gamelogs), so - unlike DTM - it's an honest feature.
+RECENT_FORM_WINDOW = 5
+FEATURES = ["Line", "Odds", "BE Prob", "Recent Form"]
 
 
 def implied_probability(odds):
@@ -139,6 +148,48 @@ def fetch_todays_odds():
     return pd.DataFrame(all_rows)
 
 
+def enrich_with_live_signals(todays_slate):
+    """Adds 'Recent Form' (model feature) and 'Injury Status' (display-only) columns
+    from ESPN. Best-effort: any failure leaves those columns empty rather than
+    breaking the pipeline, since ESPN's endpoints here are undocumented."""
+    todays_slate["Recent Form"] = np.nan
+    todays_slate["Injury Status"] = None
+
+    player_id_map = espn_client.fetch_player_id_map()
+    if not player_id_map:
+        print("  ⚠️ Could not load ESPN player rosters; skipping recent form/injury enrichment.")
+        return todays_slate
+
+    injury_map = espn_client.fetch_injury_status_map()
+
+    recent_games_cache = {}
+    recent_form_values = []
+    injury_values = []
+    for _, row in todays_slate.iterrows():
+        norm_name = espn_client.normalize_name(row["Player"])
+        injury_values.append(injury_map.get(norm_name))
+
+        athlete_id = player_id_map.get(norm_name)
+        if not athlete_id:
+            recent_form_values.append(None)
+            continue
+
+        if athlete_id not in recent_games_cache:
+            recent_games_cache[athlete_id] = espn_client.fetch_recent_games(athlete_id, RECENT_FORM_WINDOW)
+            time.sleep(0.15)
+
+        recent_form_values.append(
+            espn_client.recent_form_for_bet_type(recent_games_cache[athlete_id], row["Bet Type"])
+        )
+
+    todays_slate["Recent Form"] = pd.to_numeric(pd.Series(recent_form_values), errors="coerce")
+    todays_slate["Injury Status"] = injury_values
+
+    matched = todays_slate["Recent Form"].notna().sum()
+    print(f"  \U0001fa7a Recent form resolved for {matched}/{len(todays_slate)} prop rows.")
+    return todays_slate
+
+
 def load_history():
     try:
         history = pd.read_csv(HISTORY_FILE)
@@ -151,6 +202,11 @@ def load_history():
             history[col] = history[col].astype(str).str.rstrip("%").astype(float) / 100
 
     history["Result"] = history["Result"].astype(str).str.upper()
+
+    history = history.sort_values("Date").reset_index(drop=True)
+    history["Recent Form"] = history.groupby(["Player", "Bet Type"])["Stat Value"].transform(
+        lambda s: s.shift(1).rolling(RECENT_FORM_WINDOW, min_periods=1).mean()
+    )
     return history
 
 
@@ -231,6 +287,14 @@ def run_prediction_engine():
         write_predictions(OUTPUT_DIR, message="No live odds available for today's slate yet.")
         print("✅ Wrote empty predictions.json.")
         return
+
+    print("\U0001fa7a Fetching ESPN injury reports and recent form...")
+    try:
+        todays_slate = enrich_with_live_signals(todays_slate)
+    except Exception as exc:  # ESPN's endpoints are undocumented; never let this break the run
+        print(f"  ⚠️ Live signal enrichment failed, continuing without it: {exc}")
+        todays_slate["Recent Form"] = np.nan
+        todays_slate["Injury Status"] = None
 
     print(f"\U0001f3af Training model on {len(history)} historical rows...")
     model = train_model(history)
