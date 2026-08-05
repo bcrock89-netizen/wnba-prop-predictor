@@ -107,12 +107,36 @@ downloads (sportsdataverse) generally are not.
   pipeline's own log output (`🩺`/`🏀` lines) for match-rate sanity checks
   after any change to these upstream sources.
 
+## Model evaluation
+
+`backtest.py` compares the current 7-feature model against the original
+3-feature (Line/Odds/BE Prob) baseline on held-out historical data, using a
+chronological split (train on earlier dates, test on later ones - both
+models train/test on the identical rows) rather than a random split, since
+that's how the model is actually used: trained once, then predicting games
+it hasn't seen. Run it yourself with `python backtest.py`.
+
+**Honest result as of this writing** (5374 train rows, 1513 held-out test
+rows): both models sit at **AUC ≈ 0.49** on the test set — essentially
+chance-level, meaning neither one shows a real, validated predictive edge
+over the betting market on this data. The 7-feature model edges out the
+baseline on AUC and accuracy and loses less money in the flat-stake betting
+simulation (-7.8% ROI vs -9.7%), but every one of these deltas is small
+relative to a ~1,500-row test set and should be read as noise, not proof the
+new features help. Log loss actually favors the baseline slightly. This
+isn't a reason to rip the features back out - none of them are theoretically
+unsound, and a 3-month window of one season is a small dataset to judge them
+on - but **don't treat this model's `Calculated Edge` as a validated betting
+signal** until this backtest looks better with more data and/or more rigorous
+validation (e.g. an expanding-window backtest across multiple seasons,
+significance testing on the AUC delta).
+
 ## Roadmap
 
-- **Model evaluation**: no backtest yet showing whether the newer features
-  (Recent Form, Team Pace, Opp Def Rating, Back to Back) actually improve
-  predictions over the original 3-feature (Line/Odds/BE Prob) baseline —
-  worth building before trusting the model's edges.
+- Re-run `backtest.py` periodically as more of the season accumulates in
+  `wnba_historical_props.csv`, and once (if) a full second season is
+  available, extend it to an expanding-window backtest across seasons rather
+  than a single train/test split.
 - Further context features (e.g. rest days beyond just back-to-back,
   home/away splits) could layer onto the same sportsdataverse data already
   wired up.
