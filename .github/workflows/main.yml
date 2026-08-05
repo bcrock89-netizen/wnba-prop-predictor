@@ -17,9 +17,6 @@ concurrency:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout Repository Code
         uses: actions/checkout@v4
@@ -45,6 +42,18 @@ jobs:
         with:
           path: frontend/public
 
+  # GitHub's "github-pages" environment only allows deployments from the
+  # default branch, so deployment is split into its own job (gated to main)
+  # rather than blocking the whole run - manual workflow_dispatch runs on
+  # other branches can still exercise the pipeline itself.
+  deploy:
+    needs: run-pipeline
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

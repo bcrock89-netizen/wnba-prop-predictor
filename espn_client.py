@@ -12,10 +12,16 @@ import unicodedata
 
 import requests
 
+# Teams/rosters/injuries.
 BASE = "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba"
+# Gamelogs live on a different host/API version - site.api.espn.com's v2
+# athletes/{id}/gamelog returns a clean 404 for WNBA; this v3 "common" API
+# is the real one (confirmed against live data).
+GAMELOG_BASE = "https://site.web.api.espn.com/apis/common/v3/sports/basketball/wnba"
 
 # Bet Type (as used in wnba_historical_props.csv) -> ESPN gamelog stat
-# abbreviation(s) to sum for that bet type.
+# abbreviation(s) to sum for that bet type. These abbreviations match the
+# gamelog response's 'labels' field (e.g. "PTS", "REB", "AST", "3PT").
 STAT_KEYS_FOR_BET_TYPE = {
     "Points": ["PTS"],
     "Rebounds": ["REB"],
@@ -121,15 +127,20 @@ def _parse_stat(raw):
 
 
 def fetch_recent_games(athlete_id, n_games=5):
-    """Returns a list of {stat_name: value} dicts for an athlete's most recent games."""
-    data = _get(f"{BASE}/athletes/{athlete_id}/gamelog")
+    """Returns a list of {stat_abbreviation: value} dicts for an athlete's most
+    recent games, e.g. {"PTS": 20.0, "REB": 4.0, ...} - most recent game first."""
+    data = _get(f"{GAMELOG_BASE}/athletes/{athlete_id}/gamelog")
     if not data:
         return []
 
-    names = [str(n).upper() for n in data.get("names", [])]
-    if not names:
+    # 'labels' holds abbreviations ("PTS", "REB", ...) matching STAT_KEYS_FOR_BET_TYPE.
+    # 'names' holds full words ("points", "totalRebounds", ...) - not what we key on.
+    labels = [str(n).upper() for n in data.get("labels", [])]
+    if not labels:
         return []
 
+    # Events are grouped by seasonTypes -> categories (roughly by month), each
+    # already newest-first; concatenating in order preserves recency overall.
     raw_rows = []
     for season_type in data.get("seasonTypes", []):
         for category in season_type.get("categories", []):
@@ -139,10 +150,10 @@ def fetch_recent_games(athlete_id, n_games=5):
     for row in raw_rows[:n_games]:
         stats = row.get("stats", [])
         game = {}
-        for name, value in zip(names, stats):
+        for label, value in zip(labels, stats):
             parsed = _parse_stat(value)
             if parsed is not None:
-                game[name] = parsed
+                game[label] = parsed
         if game:
             games.append(game)
     return games
