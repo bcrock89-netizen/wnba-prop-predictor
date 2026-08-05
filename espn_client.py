@@ -187,14 +187,9 @@ def fetch_recent_games(athlete_id, n_games=5):
         return []
 
     if not _gamelog_debug_printed:
-        _debug(f"gamelog top-level keys (athlete {athlete_id})", list(data.keys()))
-        for key, value in data.items():
-            if isinstance(value, list):
-                _debug(f"gamelog['{key}'] (list, len={len(value)}) first item", value[0] if value else None)
-            elif isinstance(value, dict):
-                _debug(f"gamelog['{key}'] (dict) keys", list(value.keys()))
-            else:
-                _debug(f"gamelog['{key}']", value)
+        _debug(f"gamelog FULL 'labels' (athlete {athlete_id})", data.get("labels"))
+        _debug("gamelog FULL 'names'", data.get("names"))
+        _debug("gamelog FULL 'glossary'", data.get("glossary"))
 
     names = [str(n).upper() for n in data.get("names", [])]
     if not names:
