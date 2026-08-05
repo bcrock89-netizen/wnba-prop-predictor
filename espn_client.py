@@ -6,32 +6,22 @@ to an empty/None result instead of raising, so a change on ESPN's side never
 takes down the odds/prediction pipeline.
 """
 
-import json
 import re
 import time
 import unicodedata
 
 import requests
 
+# Teams/rosters/injuries.
 BASE = "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba"
-# Rosters/teams/injuries live under site.api.espn.com/apis/site/v2 (confirmed
-# working live). Gamelogs are NOT under that host - site.api.espn.com/.../
-# athletes/{id}/gamelog returns a clean 404. The v3 "common" API on a
-# different host is the real gamelog endpoint.
+# Gamelogs live on a different host/API version - site.api.espn.com's v2
+# athletes/{id}/gamelog returns a clean 404 for WNBA; this v3 "common" API
+# is the real one (confirmed against live data).
 GAMELOG_BASE = "https://site.web.api.espn.com/apis/common/v3/sports/basketball/wnba"
 
-# TEMPORARY: dumps raw shapes of ESPN responses to stdout for one diagnostic
-# run, so real (unguessed) JSON shapes can be read from GitHub Actions logs.
-# Remove once espn_client.py is confirmed working against live data.
-_DEBUG = True
-
-
-def _debug(label, obj):
-    if _DEBUG:
-        print(f"  [espn-debug] {label}: {json.dumps(obj, default=str)[:2500]}")
-
 # Bet Type (as used in wnba_historical_props.csv) -> ESPN gamelog stat
-# abbreviation(s) to sum for that bet type.
+# abbreviation(s) to sum for that bet type. These abbreviations match the
+# gamelog response's 'labels' field (e.g. "PTS", "REB", "AST", "3PT").
 STAT_KEYS_FOR_BET_TYPE = {
     "Points": ["PTS"],
     "Rebounds": ["REB"],
@@ -52,39 +42,20 @@ def normalize_name(name):
     return re.sub(r"\s+", " ", name)
 
 
-_get_failure_debug_count = 0
-_MAX_GET_FAILURE_DEBUG = 3
-
-
 def _get(url, params=None, timeout=20):
-    global _get_failure_debug_count
-
     try:
         resp = requests.get(url, params=params, timeout=timeout)
         if resp.status_code != 200:
-            if _DEBUG and _get_failure_debug_count < _MAX_GET_FAILURE_DEBUG:
-                _get_failure_debug_count += 1
-                print(f"  [espn-debug] GET {url} -> HTTP {resp.status_code}: {resp.text[:300]}")
             return None
         return resp.json()
-    except requests.RequestException as exc:
-        if _DEBUG and _get_failure_debug_count < _MAX_GET_FAILURE_DEBUG:
-            _get_failure_debug_count += 1
-            print(f"  [espn-debug] GET {url} raised {type(exc).__name__}: {exc}")
-        return None
-    except ValueError as exc:
-        if _DEBUG and _get_failure_debug_count < _MAX_GET_FAILURE_DEBUG:
-            _get_failure_debug_count += 1
-            print(f"  [espn-debug] GET {url} returned non-JSON: {exc}")
+    except (requests.RequestException, ValueError):
         return None
 
 
 def fetch_team_ids():
     data = _get(f"{BASE}/teams")
     if not data:
-        _debug("teams fetch failed", None)
         return []
-    _debug("teams top-level keys", list(data.keys()))
     team_ids = []
     try:
         for league in data.get("sports", [{}])[0].get("leagues", []):
@@ -94,7 +65,6 @@ def fetch_team_ids():
                     team_ids.append(team_id)
     except (AttributeError, IndexError, TypeError):
         return []
-    _debug("team_ids found", team_ids)
     return team_ids
 
 
@@ -112,27 +82,16 @@ def _flatten_roster_athletes(roster_json):
 def fetch_player_id_map():
     """Returns {normalized_player_name: espn_athlete_id} across all WNBA rosters."""
     id_map = {}
-    team_ids = fetch_team_ids()
-    for i, team_id in enumerate(team_ids):
+    for team_id in fetch_team_ids():
         roster = _get(f"{BASE}/teams/{team_id}/roster")
         if not roster:
-            _debug(f"roster fetch failed for team {team_id}", None)
             continue
-        if i == 0:
-            _debug("first roster top-level keys", list(roster.keys()))
-            raw_athletes = roster.get("athletes", [])
-            _debug("first roster 'athletes' entry (raw, unflattened)", raw_athletes[0] if raw_athletes else None)
-        flat = _flatten_roster_athletes(roster)
-        if i == 0:
-            _debug("first roster flattened athlete sample", flat[0] if flat else None)
-        for athlete in flat:
+        for athlete in _flatten_roster_athletes(roster):
             name = athlete.get("displayName") or athlete.get("fullName")
             athlete_id = athlete.get("id")
             if name and athlete_id:
                 id_map[normalize_name(name)] = athlete_id
         time.sleep(0.2)
-    _debug("player_id_map size", len(id_map))
-    _debug("player_id_map sample keys", list(id_map.keys())[:10])
     return id_map
 
 
@@ -140,20 +99,15 @@ def fetch_injury_status_map():
     """Returns {normalized_player_name: status_string} e.g. 'Out', 'Day-To-Day'."""
     data = _get(f"{BASE}/injuries")
     if not data:
-        _debug("injuries fetch failed", None)
         return {}
-    _debug("injuries top-level keys", list(data.keys()))
-    raw_injuries = data.get("injuries", [])
-    _debug("injuries first team entry (raw)", raw_injuries[0] if raw_injuries else None)
     status_map = {}
-    for team_entry in raw_injuries:
+    for team_entry in data.get("injuries", []):
         for item in team_entry.get("injuries", []):
             athlete = item.get("athlete", {})
             name = athlete.get("displayName")
             status = item.get("status") or item.get("type", {}).get("description")
             if name and status:
                 status_map[normalize_name(name)] = status
-    _debug("injury_status_map", status_map)
     return status_map
 
 
@@ -172,50 +126,34 @@ def _parse_stat(raw):
         return None
 
 
-_gamelog_debug_printed = False
-
-
 def fetch_recent_games(athlete_id, n_games=5):
-    """Returns a list of {stat_name: value} dicts for an athlete's most recent games."""
-    global _gamelog_debug_printed
-
+    """Returns a list of {stat_abbreviation: value} dicts for an athlete's most
+    recent games, e.g. {"PTS": 20.0, "REB": 4.0, ...} - most recent game first."""
     data = _get(f"{GAMELOG_BASE}/athletes/{athlete_id}/gamelog")
     if not data:
-        if not _gamelog_debug_printed:
-            _debug(f"gamelog fetch failed for athlete {athlete_id}", None)
-            _gamelog_debug_printed = True
         return []
 
-    if not _gamelog_debug_printed:
-        _debug(f"gamelog FULL 'labels' (athlete {athlete_id})", data.get("labels"))
-        _debug("gamelog FULL 'names'", data.get("names"))
-        _debug("gamelog FULL 'glossary'", data.get("glossary"))
-
-    names = [str(n).upper() for n in data.get("names", [])]
-    if not names:
-        if not _gamelog_debug_printed:
-            _debug("gamelog had no top-level 'names' field", None)
-            _gamelog_debug_printed = True
+    # 'labels' holds abbreviations ("PTS", "REB", ...) matching STAT_KEYS_FOR_BET_TYPE.
+    # 'names' holds full words ("points", "totalRebounds", ...) - not what we key on.
+    labels = [str(n).upper() for n in data.get("labels", [])]
+    if not labels:
         return []
 
+    # Events are grouped by seasonTypes -> categories (roughly by month), each
+    # already newest-first; concatenating in order preserves recency overall.
     raw_rows = []
     for season_type in data.get("seasonTypes", []):
         for category in season_type.get("categories", []):
             raw_rows.extend(category.get("events", []))
 
-    if not _gamelog_debug_printed:
-        _debug("gamelog raw_rows count", len(raw_rows))
-        _debug("gamelog first raw row", raw_rows[0] if raw_rows else None)
-        _gamelog_debug_printed = True
-
     games = []
     for row in raw_rows[:n_games]:
         stats = row.get("stats", [])
         game = {}
-        for name, value in zip(names, stats):
+        for label, value in zip(labels, stats):
             parsed = _parse_stat(value)
             if parsed is not None:
-                game[name] = parsed
+                game[label] = parsed
         if game:
             games.append(game)
     return games
