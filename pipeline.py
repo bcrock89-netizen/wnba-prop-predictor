@@ -254,6 +254,9 @@ def enrich_with_live_signals(todays_slate):
 
     matched = todays_slate["Recent Form"].notna().sum()
     print(f"  \U0001fa7a Recent form resolved for {matched}/{len(todays_slate)} prop rows.")
+    team_matched = todays_slate["Team Pace"].notna().sum()
+    opp_matched = todays_slate["Opp Def Rating"].notna().sum()
+    print(f"  \U0001f3c0 Team pace resolved for {team_matched}/{len(todays_slate)}, opp defense for {opp_matched}/{len(todays_slate)} prop rows.")
     return todays_slate
 
 
