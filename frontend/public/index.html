@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WNBA Prop Predictor</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1:      #fcfcfb;
+    --page:           #f9f9f7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --gridline:       #e1e0d9;
+    --baseline:       #c3c2b7;
+    --border:         rgba(11,11,11,0.10);
+    --series-1:       #2a78d6;
+    --status-good:    #0ca30c;
+    --status-critical:#d03b3b;
+    --delta-good:     #006300;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --page:           #0d0d0d;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --gridline:       #2c2c2a;
+      --baseline:       #383835;
+      --border:         rgba(255,255,255,0.10);
+      --series-1:       #3987e5;
+      --status-good:    #0ca30c;
+      --status-critical:#e66767;
+      --delta-good:     #0ca30c;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1:      #1a1a19;
+    --page:           #0d0d0d;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --gridline:       #2c2c2a;
+    --baseline:       #383835;
+    --border:         rgba(255,255,255,0.10);
+    --series-1:       #3987e5;
+    --status-good:    #0ca30c;
+    --status-critical:#e66767;
+    --delta-good:     #0ca30c;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--text-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 32px 20px 64px;
+  }
+  header.page-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 24px;
+  }
+  h1 {
+    font-size: 22px;
+    margin: 0;
+  }
+  .updated {
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    margin-bottom: 28px;
+  }
+  .tile {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .tile .label {
+    font-size: 12px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 6px;
+  }
+  .tile .value {
+    font-size: 26px;
+    font-weight: 600;
+  }
+  .tile .sub {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+  }
+  .tile .value.good { color: var(--delta-good); }
+  .tile .value.critical { color: var(--status-critical); }
+
+  section {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  section h2 {
+    font-size: 15px;
+    margin: 0 0 14px;
+  }
+
+  .bar-row {
+    display: grid;
+    grid-template-columns: 110px 1fr 64px;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    padding: 5px 0;
+  }
+  .bar-row .name { color: var(--text-secondary); }
+  .bar-track {
+    display: block;
+    background: var(--gridline);
+    border-radius: 3px;
+    height: 10px;
+    overflow: hidden;
+  }
+  .bar-fill {
+    display: block;
+    background: var(--series-1);
+    height: 100%;
+    border-radius: 3px 0 0 3px;
+  }
+  .bar-row .pct {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-secondary);
+  }
+
+  .filters {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+    font-size: 13px;
+  }
+  select {
+    background: var(--surface-1);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 8px;
+    font: inherit;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  thead th {
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.03em;
+    border-bottom: 1px solid var(--baseline);
+    padding: 8px 10px;
+    white-space: nowrap;
+  }
+  tbody td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--gridline);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  tbody tr:hover { background: var(--gridline); }
+  td.player { font-variant-numeric: normal; white-space: normal; }
+  td.matchup { color: var(--text-muted); font-size: 12px; font-variant-numeric: normal; }
+  .edge.good { color: var(--delta-good); font-weight: 600; }
+  .edge.critical { color: var(--status-critical); }
+
+  .table-scroll { overflow-x: auto; }
+
+  .empty-state {
+    color: var(--text-secondary);
+    font-size: 14px;
+    padding: 12px 0;
+  }
+  footer {
+    color: var(--text-muted);
+    font-size: 12px;
+    text-align: center;
+    margin-top: 24px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="page-head">
+    <h1>🏀 WNBA Prop Predictor</h1>
+    <span class="updated" id="updated-at">Loading…</span>
+  </header>
+
+  <div class="tiles" id="tiles"></div>
+
+  <section>
+    <h2>Win rate by bet type (historical)</h2>
+    <div id="bet-type-bars"></div>
+  </section>
+
+  <section>
+    <h2 id="predictions-heading">Today's predictions</h2>
+    <div id="predictions-body">
+      <p class="empty-state">Loading predictions…</p>
+    </div>
+  </section>
+
+  <footer>Historical results are backtested performance, not a guarantee of future results. Bet responsibly.</footer>
+</div>
+
+<script>
+async function loadJSON(path) {
+  try {
+    const res = await fetch(path, { cache: "no-store" });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (e) {
+    return null;
+  }
+}
+
+function fmtPct(x) {
+  return (x * 100).toFixed(1) + "%";
+}
+
+function fmtMoney(x) {
+  const sign = x < 0 ? "-" : "+";
+  return sign + "$" + Math.abs(x).toFixed(2);
+}
+
+function fmtOdds(o) {
+  return o > 0 ? "+" + o : String(o);
+}
+
+function fmtTime(iso) {
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      month: "short", day: "numeric", hour: "numeric", minute: "2-digit"
+    });
+  } catch (e) {
+    return iso;
+  }
+}
+
+function renderTiles(summary, predictions) {
+  const tiles = document.getElementById("tiles");
+  const items = [];
+
+  if (summary) {
+    const wr = summary.win_rate;
+    items.push({
+      label: "Historical win rate",
+      value: fmtPct(wr),
+      cls: wr >= 0.5 ? "good" : "critical",
+      sub: summary.total_bets + " decided bets",
+    });
+    items.push({
+      label: "Historical profit",
+      value: fmtMoney(summary.total_profit),
+      cls: summary.total_profit >= 0 ? "good" : "critical",
+      sub: summary.date_range ? (summary.date_range.start + " → " + summary.date_range.end) : "",
+    });
+  }
+
+  if (predictions && predictions.predictions && predictions.predictions.length) {
+    const best = predictions.predictions[0];
+    items.push({
+      label: "Today's slate",
+      value: String(predictions.count),
+      sub: "props with live odds",
+    });
+    items.push({
+      label: "Best calculated edge",
+      value: fmtPct(best["Calculated Edge"]),
+      cls: best["Calculated Edge"] >= 0 ? "good" : "critical",
+      sub: best.Player + " — " + best["Bet Type"],
+    });
+  } else {
+    items.push({ label: "Today's slate", value: "0", sub: "no live odds yet" });
+  }
+
+  tiles.innerHTML = items.map(it => `
+    <div class="tile">
+      <div class="label">${it.label}</div>
+      <div class="value ${it.cls || ""}">${it.value}</div>
+      <div class="sub">${it.sub || ""}</div>
+    </div>
+  `).join("");
+}
+
+function renderBetTypeBars(summary) {
+  const el = document.getElementById("bet-type-bars");
+  if (!summary || !summary.by_bet_type || !summary.by_bet_type.length) {
+    el.innerHTML = '<p class="empty-state">No historical data yet.</p>';
+    return;
+  }
+  const rows = [...summary.by_bet_type].sort((a, b) => b.win_rate - a.win_rate);
+  el.innerHTML = rows.map(r => `
+    <div class="bar-row">
+      <span class="name">${r["Bet Type"]}</span>
+      <span class="bar-track"><span class="bar-fill" style="width:${Math.min(r.win_rate * 100, 100)}%"></span></span>
+      <span class="pct">${fmtPct(r.win_rate)}</span>
+    </div>
+  `).join("");
+}
+
+function renderPredictions(predictions) {
+  const body = document.getElementById("predictions-body");
+  const heading = document.getElementById("predictions-heading");
+  const rows = (predictions && predictions.predictions) || [];
+
+  if (!rows.length) {
+    heading.textContent = "Today's predictions";
+    const msg = (predictions && predictions.message) || "No live odds available right now — check back closer to game time.";
+    body.innerHTML = `<p class="empty-state">${msg}</p>`;
+    return;
+  }
+
+  heading.textContent = `Today's predictions (${rows.length})`;
+
+  const betTypes = [...new Set(rows.map(r => r["Bet Type"]))].sort();
+  const filterHtml = `
+    <div class="filters">
+      <label for="bet-type-filter">Bet type</label>
+      <select id="bet-type-filter">
+        <option value="">All (${rows.length})</option>
+        ${betTypes.map(bt => `<option value="${bt}">${bt}</option>`).join("")}
+      </select>
+    </div>
+  `;
+
+  function tableHtml(filtered) {
+    return `
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Player</th>
+              <th>Matchup</th>
+              <th>Bet type</th>
+              <th>Side</th>
+              <th>Line</th>
+              <th>Odds</th>
+              <th>Win prob.</th>
+              <th>BE prob.</th>
+              <th>Edge</th>
+              <th>Book</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${filtered.map(r => `
+              <tr>
+                <td class="player">${r.Player}</td>
+                <td class="matchup">${r.Matchup || ""}</td>
+                <td>${r["Bet Type"]}</td>
+                <td>${r.Side}</td>
+                <td>${r.Line}</td>
+                <td>${fmtOdds(r.Odds)}</td>
+                <td>${fmtPct(r["Win Probability"])}</td>
+                <td>${fmtPct(r["BE Prob"])}</td>
+                <td class="edge ${r["Calculated Edge"] >= 0 ? "good" : "critical"}">${fmtPct(r["Calculated Edge"])}</td>
+                <td>${r.Bookmaker}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  body.innerHTML = filterHtml + tableHtml(rows);
+
+  document.getElementById("bet-type-filter").addEventListener("change", (e) => {
+    const val = e.target.value;
+    const filtered = val ? rows.filter(r => r["Bet Type"] === val) : rows;
+    const scroll = body.querySelector(".table-scroll");
+    scroll.outerHTML = tableHtml(filtered);
+  });
+}
+
+async function main() {
+  const [summary, predictions] = await Promise.all([
+    loadJSON("history_summary.json"),
+    loadJSON("predictions.json"),
+  ]);
+
+  const updated = document.getElementById("updated-at");
+  const ts = (predictions && predictions.generated_at) || (summary && summary.generated_at);
+  updated.textContent = ts ? "Updated " + fmtTime(ts) : "Awaiting first pipeline run";
+
+  renderTiles(summary, predictions);
+  renderBetTypeBars(summary);
+  renderPredictions(predictions);
+}
+
+main();
+</script>
+</body>
+</html>

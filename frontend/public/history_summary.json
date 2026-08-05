@@ -1,0 +1,70 @@
+{
+  "generated_at": "2026-08-05T18:24:43.129118+00:00",
+  "total_bets": 7990,
+  "wins": 4036,
+  "losses": 3954,
+  "win_rate": 0.5051,
+  "total_profit": -2820.34,
+  "date_range": {
+    "start": "2026-05-08",
+    "end": "2026-08-04"
+  },
+  "by_bet_type": [
+    {
+      "Bet Type": "Assists",
+      "bets": 1044.0,
+      "wins": 542.0,
+      "win_rate": 0.5192,
+      "profit": -323.12
+    },
+    {
+      "Bet Type": "P+R+A",
+      "bets": 152.0,
+      "wins": 79.0,
+      "win_rate": 0.5197,
+      "profit": -19.0
+    },
+    {
+      "Bet Type": "Points",
+      "bets": 1859.0,
+      "wins": 931.0,
+      "win_rate": 0.5008,
+      "profit": -582.7
+    },
+    {
+      "Bet Type": "Pts + Asts",
+      "bets": 1174.0,
+      "wins": 575.0,
+      "win_rate": 0.4898,
+      "profit": -520.35
+    },
+    {
+      "Bet Type": "Pts + Rebs",
+      "bets": 1550.0,
+      "wins": 770.0,
+      "win_rate": 0.4968,
+      "profit": -578.34
+    },
+    {
+      "Bet Type": "Rebounds",
+      "bets": 99.0,
+      "wins": 51.0,
+      "win_rate": 0.5152,
+      "profit": -45.69
+    },
+    {
+      "Bet Type": "Rebs + Asts",
+      "bets": 951.0,
+      "wins": 476.0,
+      "win_rate": 0.5005,
+      "profit": -362.82
+    },
+    {
+      "Bet Type": "Threes",
+      "bets": 1161.0,
+      "wins": 612.0,
+      "win_rate": 0.5271,
+      "profit": -388.32
+    }
+  ]
+}
