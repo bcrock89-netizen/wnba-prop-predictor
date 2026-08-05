@@ -1,0 +1,28 @@
+name: WNBA Predictor Engine
+
+on:
+  schedule:
+    - cron: '0 13 * * *' # Automatically runs every single day at 9:00 AM Eastern Time (EDT)
+  workflow_dispatch: # Allows you to press a button to run it manually anytime
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository Code
+        uses: actions/checkout@v4
+
+      - name: Initialize Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install System Dependencies
+        run: |
+          pip install pandas numpy xgboost scikit-learn requests
+
+      - name: Execute Predictor Pipeline
+        env:
+          ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+        run: python pipeline.py
