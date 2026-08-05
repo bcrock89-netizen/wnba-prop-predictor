@@ -14,6 +14,11 @@ import unicodedata
 import requests
 
 BASE = "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba"
+# Rosters/teams/injuries live under site.api.espn.com/apis/site/v2 (confirmed
+# working live). Gamelogs are NOT under that host - site.api.espn.com/.../
+# athletes/{id}/gamelog returns a clean 404. The v3 "common" API on a
+# different host is the real gamelog endpoint.
+GAMELOG_BASE = "https://site.web.api.espn.com/apis/common/v3/sports/basketball/wnba"
 
 # TEMPORARY: dumps raw shapes of ESPN responses to stdout for one diagnostic
 # run, so real (unguessed) JSON shapes can be read from GitHub Actions logs.
@@ -23,7 +28,7 @@ _DEBUG = True
 
 def _debug(label, obj):
     if _DEBUG:
-        print(f"  [espn-debug] {label}: {json.dumps(obj, default=str)[:1500]}")
+        print(f"  [espn-debug] {label}: {json.dumps(obj, default=str)[:2500]}")
 
 # Bet Type (as used in wnba_historical_props.csv) -> ESPN gamelog stat
 # abbreviation(s) to sum for that bet type.
@@ -174,21 +179,27 @@ def fetch_recent_games(athlete_id, n_games=5):
     """Returns a list of {stat_name: value} dicts for an athlete's most recent games."""
     global _gamelog_debug_printed
 
-    data = _get(f"{BASE}/athletes/{athlete_id}/gamelog")
+    data = _get(f"{GAMELOG_BASE}/athletes/{athlete_id}/gamelog")
     if not data:
         if not _gamelog_debug_printed:
             _debug(f"gamelog fetch failed for athlete {athlete_id}", None)
+            _gamelog_debug_printed = True
         return []
 
     if not _gamelog_debug_printed:
         _debug(f"gamelog top-level keys (athlete {athlete_id})", list(data.keys()))
-        _debug("gamelog 'names'", data.get("names"))
-        _debug("gamelog 'seasonTypes' (raw)", data.get("seasonTypes"))
+        for key, value in data.items():
+            if isinstance(value, list):
+                _debug(f"gamelog['{key}'] (list, len={len(value)}) first item", value[0] if value else None)
+            elif isinstance(value, dict):
+                _debug(f"gamelog['{key}'] (dict) keys", list(value.keys()))
+            else:
+                _debug(f"gamelog['{key}']", value)
 
     names = [str(n).upper() for n in data.get("names", [])]
     if not names:
         if not _gamelog_debug_printed:
-            _debug("gamelog had no 'names' field", None)
+            _debug("gamelog had no top-level 'names' field", None)
             _gamelog_debug_printed = True
         return []
 
