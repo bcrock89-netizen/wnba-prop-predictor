@@ -47,13 +47,30 @@ def normalize_name(name):
     return re.sub(r"\s+", " ", name)
 
 
+_get_failure_debug_count = 0
+_MAX_GET_FAILURE_DEBUG = 3
+
+
 def _get(url, params=None, timeout=20):
+    global _get_failure_debug_count
+
     try:
         resp = requests.get(url, params=params, timeout=timeout)
         if resp.status_code != 200:
+            if _DEBUG and _get_failure_debug_count < _MAX_GET_FAILURE_DEBUG:
+                _get_failure_debug_count += 1
+                print(f"  [espn-debug] GET {url} -> HTTP {resp.status_code}: {resp.text[:300]}")
             return None
         return resp.json()
-    except (requests.RequestException, ValueError):
+    except requests.RequestException as exc:
+        if _DEBUG and _get_failure_debug_count < _MAX_GET_FAILURE_DEBUG:
+            _get_failure_debug_count += 1
+            print(f"  [espn-debug] GET {url} raised {type(exc).__name__}: {exc}")
+        return None
+    except ValueError as exc:
+        if _DEBUG and _get_failure_debug_count < _MAX_GET_FAILURE_DEBUG:
+            _get_failure_debug_count += 1
+            print(f"  [espn-debug] GET {url} returned non-JSON: {exc}")
         return None
 
 
