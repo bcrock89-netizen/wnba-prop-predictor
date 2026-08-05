@@ -91,8 +91,8 @@ def print_report(baseline, full, train, test, split_date):
     print("=" * 72)
     print("BACKTEST: 3-feature baseline vs current 7-feature model")
     print("=" * 72)
-    print(f"Train: {len(train)} rows ({train['Date'].min()} to {train['Date'].max()})")
-    print(f"Test:  {len(test)} rows ({split_date} to {test['Date'].max()}) - held out, unseen by either model")
+    print(f"Test: {len(test)} rows, {split_date} to {test['Date'].max()} - held out, unseen by either model")
+    print(f"  (trained on {len(train)} rows, {train['Date'].min()} to {train['Date'].max()})")
     print()
 
     header = f"{'metric':<18}{'baseline (3 feat)':<20}{'full (7 feat)':<20}{'delta':<12}"
