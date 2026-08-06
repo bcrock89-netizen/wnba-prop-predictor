@@ -83,7 +83,52 @@ def train_and_score(train, test, features, label):
     else:
         metrics.update(bets_placed=0, bet_win_rate=float("nan"), total_profit=0.0, roi_pct=float("nan"))
 
-    return metrics
+    return metrics, scored
+
+
+def calibration_by_bucket(scored, value_col, n_buckets=5):
+    """Buckets held-out predictions by value_col (e.g. model-predicted edge)
+    into quantile bins and reports the ACTUAL historical win rate in each
+    bucket - i.e. what really happened for bets in that confidence range,
+    rather than trusting the model's stated number at face value. This is
+    the basis for ranking "top picks" honestly: by empirical hit rate in
+    their bucket, not by the model's raw (unvalidated) output."""
+    df = scored[scored["Result"] != "PUSH"].copy()
+    df["bucket"] = pd.qcut(df[value_col], q=n_buckets, duplicates="drop")
+    grouped = (
+        df.groupby("bucket", observed=True)
+        .agg(n=("Result", "size"), avg_value=(value_col, "mean"), hit_rate=("Result", lambda s: (s == "WIN").mean()))
+        .reset_index()
+        .sort_values("avg_value")
+    )
+    return grouped
+
+
+def print_calibration_report(scored, value_col, label, n_buckets=5):
+    print()
+    print("-" * 72)
+    print(f"CALIBRATION: actual hit rate by {label} bucket (held-out test set)")
+    print("-" * 72)
+    grouped = calibration_by_bucket(scored, value_col, n_buckets)
+    print(f"{'bucket (' + value_col + ' range)':<28}{'n':<8}{'avg ' + value_col:<16}{'actual hit rate':<16}")
+    for _, row in grouped.iterrows():
+        bucket_str = f"{row['bucket'].left:.3f} to {row['bucket'].right:.3f}"
+        print(f"{bucket_str:<28}{int(row['n']):<8}{row['avg_value']:<16.3f}{row['hit_rate']:<16.1%}")
+
+    hit_rates = grouped["hit_rate"].to_numpy()
+    is_monotonic = np.all(np.diff(hit_rates) >= -0.02)  # small tolerance for noise
+    spread = hit_rates.max() - hit_rates.min()
+    print()
+    if is_monotonic and spread > 0.05:
+        print(f"Hit rate rises roughly monotonically across buckets (spread {spread:.1%}) - some real signal here.")
+    else:
+        print(
+            f"Hit rate does NOT rise cleanly across buckets (spread {spread:.1%}, non-monotonic) - "
+            f"a higher {value_col} here has not corresponded to actually winning more often. "
+            "Ranking 'top picks' by this bucket's empirical hit rate rather than the raw model "
+            "number reflects that honestly."
+        )
+    return grouped
 
 
 def print_report(baseline, full, train, test, split_date):
@@ -131,10 +176,12 @@ def main():
     if len(test) < 30:
         print(f"⚠️ Test set is only {len(test)} rows - results below are noisy, treat directionally only.")
 
-    baseline_metrics = train_and_score(train, test, BASELINE_FEATURES, "baseline")
-    full_metrics = train_and_score(train, test, FULL_FEATURES, "full")
+    baseline_metrics, _ = train_and_score(train, test, BASELINE_FEATURES, "baseline")
+    full_metrics, full_scored = train_and_score(train, test, FULL_FEATURES, "full")
 
     print_report(baseline_metrics, full_metrics, train, test, split_date)
+    print_calibration_report(full_scored, "edge", "Calculated Edge")
+    print_calibration_report(full_scored, "model_proba", "model win probability")
 
 
 if __name__ == "__main__":
