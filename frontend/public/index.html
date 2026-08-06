@@ -231,6 +231,47 @@
 
   .table-scroll { overflow-x: auto; }
 
+  .games-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    gap: 12px;
+  }
+  .game-card {
+    display: block;
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .game-card:hover {
+    border-color: var(--series-1);
+    background: var(--gridline);
+  }
+  .game-card .card-matchup {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .game-card .card-meta {
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .game-card .card-badges {
+    margin-top: 8px;
+    margin-left: -6px;
+  }
+  .back-link {
+    display: inline-block;
+    font-size: 13px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    margin-bottom: 14px;
+  }
+  .back-link:hover { color: var(--text-primary); }
+
   .empty-state {
     color: var(--text-secondary);
     font-size: 14px;
@@ -388,19 +429,57 @@ function renderBetTypeBars(summary) {
   `).join("");
 }
 
-function renderPredictions(predictions) {
-  const body = document.getElementById("predictions-body");
-  const heading = document.getElementById("predictions-heading");
-  const rows = (predictions && predictions.predictions) || [];
+function gameHash(matchup) {
+  return "#game=" + encodeURIComponent(matchup);
+}
 
-  if (!rows.length) {
-    heading.textContent = "Today's predictions";
-    const msg = (predictions && predictions.message) || "No live odds available right now — check back closer to game time.";
-    body.innerHTML = `<p class="empty-state">${msg}</p>`;
-    return;
+function currentGameFromHash() {
+  const match = location.hash.match(/^#game=(.+)$/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+function groupByMatchup(rows) {
+  const groups = new Map();
+  for (const r of rows) {
+    const key = r.Matchup || "Unknown matchup";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
   }
+  return groups;
+}
 
-  heading.textContent = `Today's predictions (${rows.length})`;
+function renderGamesList(body, heading, rows) {
+  heading.textContent = `Tonight's games (${groupByMatchup(rows).size})`;
+
+  const groups = [...groupByMatchup(rows).entries()].sort((a, b) => {
+    const ta = a[1][0]["Commence Time"] || "";
+    const tb = b[1][0]["Commence Time"] || "";
+    return ta < tb ? -1 : ta > tb ? 1 : 0;
+  });
+
+  body.innerHTML = `
+    <div class="games-grid">
+      ${groups.map(([matchup, gameRows]) => {
+        const outCount = gameRows.filter(r => injuryBadgeClass(r["Injury Status"]) === "critical").length;
+        const hasB2B = gameRows.some(r => r["Back to Back"] === 1 || r["Back to Back"] === 1.0);
+        const commence = gameRows[0]["Commence Time"];
+        return `
+          <a class="game-card" href="${gameHash(matchup)}">
+            <div class="card-matchup">${matchup}</div>
+            <div class="card-meta">${commence ? fmtTime(commence) : ""} · ${gameRows.length} props</div>
+            <div class="card-badges">
+              ${outCount ? `<span class="badge critical">${outCount} Out</span>` : ""}
+              ${hasB2B ? `<span class="badge warning">B2B</span>` : ""}
+            </div>
+          </a>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderGameDetail(body, heading, rows, matchup) {
+  heading.innerHTML = `<a class="back-link" href="#">← All games</a><br>${matchup}`;
 
   const betTypes = [...new Set(rows.map(r => r["Bet Type"]))].sort();
   const outCount = rows.filter(r => injuryBadgeClass(r["Injury Status"]) === "critical").length;
@@ -425,7 +504,6 @@ function renderPredictions(predictions) {
           <thead>
             <tr>
               <th>Player</th>
-              <th>Matchup</th>
               <th>Bet type</th>
               <th>Side</th>
               <th>Line</th>
@@ -441,7 +519,6 @@ function renderPredictions(predictions) {
             ${filtered.map(r => `
               <tr>
                 <td class="player">${r.Player}${injuryBadgeHtml(r["Injury Status"])}${backToBackBadgeHtml(r["Back to Back"])}</td>
-                <td class="matchup">${r.Matchup || ""}</td>
                 <td>${r["Bet Type"]}</td>
                 <td>${r.Side}</td>
                 <td>${r.Line}</td>
@@ -475,6 +552,28 @@ function renderPredictions(predictions) {
   document.getElementById("hide-out-filter").addEventListener("change", applyFilters);
 }
 
+function renderPredictions(predictions) {
+  const body = document.getElementById("predictions-body");
+  const heading = document.getElementById("predictions-heading");
+  const rows = (predictions && predictions.predictions) || [];
+
+  if (!rows.length) {
+    heading.textContent = "Today's predictions";
+    const msg = (predictions && predictions.message) || "No live odds available right now — check back closer to game time.";
+    body.innerHTML = `<p class="empty-state">${msg}</p>`;
+    return;
+  }
+
+  const selectedMatchup = currentGameFromHash();
+  const gameRows = selectedMatchup ? rows.filter(r => (r.Matchup || "Unknown matchup") === selectedMatchup) : [];
+
+  if (selectedMatchup && gameRows.length) {
+    renderGameDetail(body, heading, gameRows, selectedMatchup);
+  } else {
+    renderGamesList(body, heading, rows);
+  }
+}
+
 async function main() {
   const [summary, predictions] = await Promise.all([
     loadJSON("history_summary.json"),
@@ -488,6 +587,8 @@ async function main() {
   renderTiles(summary, predictions);
   renderBetTypeBars(summary);
   renderPredictions(predictions);
+
+  window.addEventListener("hashchange", () => renderPredictions(predictions));
 }
 
 main();
