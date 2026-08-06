@@ -42,7 +42,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -A -- wnba_historical_props.csv pending_grades.csv
+          git add -A -- wnba_historical_props.csv
+          git add -A -- pending_grades.csv 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "No data changes to commit."
           else
