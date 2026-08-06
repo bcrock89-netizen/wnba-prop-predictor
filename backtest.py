@@ -16,14 +16,16 @@ does not need ESPN or the Odds API.
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, log_loss, roc_auc_score
-from xgboost import XGBClassifier
+from xgboost import XGBClassifier, XGBRegressor
 
 import pipeline
 
 BASELINE_FEATURES = ["Line", "Odds", "BE Prob"]
 FULL_FEATURES = pipeline.FEATURES
+CONTEXT_FEATURES = ["Recent Form", "Team Pace", "Opp Def Rating", "Back to Back"]
 TEST_FRACTION = 0.2
 STAKE = 100
+MIN_ROWS_PER_BET_TYPE = 50
 
 
 def payout_if_win(odds):
@@ -131,6 +133,179 @@ def print_calibration_report(scored, value_col, label, n_buckets=5):
     return grouped
 
 
+def evaluate_matchup_heuristic(train, test):
+    """Tests a model-free 'top picks' heuristic: historical bet-type win rate
+    (computed ONLY from train, so no leakage into test) combined with a
+    side-adjusted opponent-defense matchup score (from Opp Def Rating, also
+    leak-free/pregame). Checks whether this actually predicts hit rate on
+    held-out test data - the same scrutiny already applied to the model's
+    own Edge/probability."""
+    decided_train = train[train["Result"].isin(["WIN", "LOSS"])]
+    decided_test = test[test["Result"].isin(["WIN", "LOSS"])]
+    bet_type_train_wr = decided_train.groupby("Bet Type")["Result"].apply(lambda s: (s == "WIN").mean())
+    bet_type_test_wr = decided_test.groupby("Bet Type")["Result"].apply(lambda s: (s == "WIN").mean())
+
+    print()
+    print("-" * 72)
+    print("BET-TYPE WIN RATE PERSISTENCE: train win rate vs held-out test win rate")
+    print("-" * 72)
+    comparison = pd.DataFrame({"train_win_rate": bet_type_train_wr, "test_win_rate": bet_type_test_wr}).dropna()
+    comparison = comparison.sort_values("train_win_rate", ascending=False)
+    print(f"{'Bet Type':<16}{'train win rate':<18}{'test win rate':<18}")
+    for bet_type, row in comparison.iterrows():
+        print(f"{bet_type:<16}{row['train_win_rate']:<18.1%}{row['test_win_rate']:<18.1%}")
+    correlation = comparison["train_win_rate"].corr(comparison["test_win_rate"])
+    print(f"\nCorrelation between train and test win rate across bet types: {correlation:.2f}")
+    if correlation > 0.3:
+        print("Bet-type win rate shows some persistence out of sample - plausibly a real, usable signal.")
+    else:
+        print(
+            "Bet-type win rate does NOT persist out of sample - a bet type that looked strong in "
+            "train is not reliably strong in test. Not a signal to rank picks on."
+        )
+
+    print()
+    print("-" * 72)
+    print("MATCHUP HEURISTIC: side-adjusted opponent-defense favorability vs hit rate")
+    print("-" * 72)
+    league_avg_pts_allowed = train["Opp Def Rating"].mean()
+    test_scored = test.dropna(subset=["Opp Def Rating"]).copy()
+    deviation = test_scored["Opp Def Rating"] - league_avg_pts_allowed
+    # Over favored by a weak (high points-allowed) opponent defense; Under favored by a strong one.
+    test_scored["matchup_score"] = np.where(test_scored["Side"] == "Over", deviation, -deviation)
+
+    matchup_calib = calibration_by_bucket(test_scored, "matchup_score", n_buckets=5)
+    print(f"{'bucket (matchup_score range)':<32}{'n':<8}{'avg score':<14}{'actual hit rate':<16}")
+    for _, row in matchup_calib.iterrows():
+        bucket_str = f"{row['bucket'].left:.2f} to {row['bucket'].right:.2f}"
+        print(f"{bucket_str:<32}{int(row['n']):<8}{row['avg_value']:<14.2f}{row['hit_rate']:<16.1%}")
+
+    hit_rates = matchup_calib["hit_rate"].to_numpy()
+    spread = hit_rates.max() - hit_rates.min()
+    is_rising = np.all(np.diff(hit_rates) >= -0.02)
+    print()
+    if is_rising and spread > 0.05:
+        print(f"Hit rate rises with matchup favorability (spread {spread:.1%}) - this looks like real signal.")
+    else:
+        print(
+            f"Hit rate does NOT rise cleanly with matchup favorability (spread {spread:.1%}) - "
+            "no clean signal here either on this test set."
+        )
+
+    return comparison, matchup_calib
+
+
+def evaluate_recent_vs_season_win_rate(split_date, window=10):
+    """Tests a player's own recent hit rate (win rate over their last
+    `window` bets in that Bet Type, leak-free/shifted) as a 'top picks'
+    signal, alongside their season-long (all prior bets, leak-free/shifted)
+    win rate for direct comparison - is recent form a stronger or weaker
+    signal than the simple season-to-date rate?"""
+    print()
+    print("=" * 72)
+    print(f"RECENT (last {window} bets) vs SEASON-LONG per-player win rate")
+    print("=" * 72)
+
+    history = pipeline.load_history()  # local CSV only - no network needed for this one
+    history = history.sort_values("Date").reset_index(drop=True)
+    history["is_win"] = (history["Result"] == "WIN").astype(float)
+    history.loc[history["Result"] == "PUSH", "is_win"] = np.nan
+
+    grouped_is_win = history.groupby(["Player", "Bet Type"])["is_win"]
+    history["recent_win_rate"] = grouped_is_win.transform(lambda s: s.shift(1).rolling(window, min_periods=3).mean())
+    history["season_win_rate"] = grouped_is_win.transform(lambda s: s.shift(1).expanding(min_periods=3).mean())
+
+    test_rows = history[(history["Date"] >= split_date) & (history["Result"] != "PUSH")]
+
+    for col, label in [("recent_win_rate", f"last {window} bets"), ("season_win_rate", "season-long (all prior bets)")]:
+        subset = test_rows.dropna(subset=[col])
+        print(f"\n--- {label} --- (n={len(subset)}/{len(test_rows)} held-out rows with enough prior history)")
+        grouped = calibration_by_bucket(subset, col, n_buckets=5)
+        print(f"{'bucket':<20}{'n':<8}{'avg rate':<14}{'actual hit rate':<16}")
+        for _, row in grouped.iterrows():
+            bucket_str = f"{row['bucket'].left:.1%} to {row['bucket'].right:.1%}"
+            print(f"{bucket_str:<20}{int(row['n']):<8}{row['avg_value']:<14.1%}{row['hit_rate']:<16.1%}")
+
+        hit_rates = grouped["hit_rate"].to_numpy()
+        spread = hit_rates.max() - hit_rates.min()
+        is_rising = np.all(np.diff(hit_rates) >= -0.02)
+        verdict = "RISING - plausible signal" if (is_rising and spread > 0.05) else "flat/non-monotonic - no clean signal"
+        print(f"Spread: {spread:.1%}. Verdict: {verdict}.")
+
+
+def evaluate_regression_approach(dataset, split_date):
+    """Prototype: instead of one binary win/loss classifier pooling every bet
+    type together, fit a SEPARATE regressor per Bet Type to predict the
+    actual Stat Value from context-only features (Recent Form, Team Pace,
+    Opp Def Rating, Back to Back - deliberately excluding Line/Odds/BE Prob,
+    since those describe the bet, not the player, and the point is to test
+    whether context carries information the market hasn't already priced).
+    The prediction is then compared to the book's Line to derive a signed
+    margin, and that margin is calibrated against actual outcomes the same
+    way Edge was checked earlier."""
+    print()
+    print("=" * 72)
+    print("REGRESSION APPROACH: per-bet-type Stat Value prediction vs the Line")
+    print("=" * 72)
+
+    train = dataset[dataset["Date"] < split_date]
+    test = dataset[dataset["Date"] >= split_date]
+
+    all_scored = []
+    print(f"{'Bet Type':<14}{'n train':<10}{'n test':<10}{'book MAE':<12}{'model MAE':<12}{'better'}")
+    for bet_type in sorted(dataset["Bet Type"].unique()):
+        bt_train = train[train["Bet Type"] == bet_type].dropna(subset=CONTEXT_FEATURES + ["Stat Value"])
+        bt_test = test[test["Bet Type"] == bet_type].dropna(subset=CONTEXT_FEATURES + ["Stat Value", "Line"])
+        if len(bt_train) < MIN_ROWS_PER_BET_TYPE or len(bt_test) < 20:
+            print(f"{bet_type:<14}{len(bt_train):<10}{len(bt_test):<10}skipped (too few rows)")
+            continue
+
+        X_train, y_train = bt_train[CONTEXT_FEATURES], bt_train["Stat Value"]
+        X_test, y_test = bt_test[CONTEXT_FEATURES], bt_test["Stat Value"]
+
+        model = XGBRegressor(n_estimators=200, max_depth=3, learning_rate=0.05, random_state=42)
+        model.fit(X_train, y_train)
+        pred = model.predict(X_test)
+
+        book_mae = float((bt_test["Line"] - y_test).abs().mean())
+        model_mae = float(np.abs(pred - y_test.to_numpy()).mean())
+        better = "model" if model_mae < book_mae else "book"
+        print(f"{bet_type:<14}{len(bt_train):<10}{len(bt_test):<10}{book_mae:<12.2f}{model_mae:<12.2f}{better}")
+
+        scored = bt_test.copy()
+        scored["predicted_stat"] = pred
+        scored["predicted_margin"] = np.where(scored["Side"] == "Over", pred - scored["Line"], scored["Line"] - pred)
+        all_scored.append(scored)
+
+    if not all_scored:
+        print("\nNo bet types had enough rows to evaluate.")
+        return
+
+    combined = pd.concat(all_scored, ignore_index=True)
+    combined = combined[combined["Result"] != "PUSH"]
+    print(f"\nCombined held-out rows across all evaluated bet types: {len(combined)}")
+    print(
+        "'book MAE' = how far the book's own Line was from the actual result on average; "
+        "'model MAE' = how far this regressor's prediction was, using ONLY context features "
+        "(no Line/Odds). Lower is better; 'better' names whichever was closer."
+    )
+
+    grouped = calibration_by_bucket(combined, "predicted_margin", n_buckets=5)
+    print(f"\n{'bucket (predicted margin)':<28}{'n':<8}{'avg margin':<14}{'actual hit rate':<16}")
+    for _, row in grouped.iterrows():
+        bucket_str = f"{row['bucket'].left:.2f} to {row['bucket'].right:.2f}"
+        print(f"{bucket_str:<28}{int(row['n']):<8}{row['avg_value']:<14.2f}{row['hit_rate']:<16.1%}")
+
+    hit_rates = grouped["hit_rate"].to_numpy()
+    spread = hit_rates.max() - hit_rates.min()
+    is_rising = np.all(np.diff(hit_rates) >= -0.02)
+    print()
+    if is_rising and spread > 0.05:
+        print(f"Hit rate rises with predicted margin (spread {spread:.1%}) - this looks like real signal.")
+    else:
+        print(f"Hit rate does NOT rise cleanly with predicted margin (spread {spread:.1%}) - still no clean signal.")
+
+
 def print_report(baseline, full, train, test, split_date):
     print()
     print("=" * 72)
@@ -182,6 +357,9 @@ def main():
     print_report(baseline_metrics, full_metrics, train, test, split_date)
     print_calibration_report(full_scored, "edge", "Calculated Edge")
     print_calibration_report(full_scored, "model_proba", "model win probability")
+    evaluate_matchup_heuristic(train, test)
+    evaluate_recent_vs_season_win_rate(split_date)
+    evaluate_regression_approach(dataset, split_date)
 
 
 if __name__ == "__main__":
