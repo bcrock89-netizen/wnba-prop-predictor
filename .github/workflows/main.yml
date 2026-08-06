@@ -6,7 +6,7 @@ on:
   workflow_dispatch: # Allows you to press a button to run it manually anytime
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -33,6 +33,22 @@ jobs:
         env:
           ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
         run: python pipeline.py
+
+      # Manual runs only for now, while auto-grading is still being verified -
+      # the daily schedule does not push unattended. Once it's proven out over
+      # a few manual runs, this condition can be dropped to cover schedule too.
+      - name: Commit and push updated data files
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A -- wnba_historical_props.csv pending_grades.csv
+          if git diff --cached --quiet; then
+            echo "No data changes to commit."
+          else
+            git commit -m "Auto-grade pending picks and snapshot today's best-edge picks [skip ci]"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5

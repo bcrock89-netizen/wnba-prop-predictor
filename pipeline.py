@@ -561,6 +561,13 @@ def grade_pending_picks():
 
 
 def run_prediction_engine():
+    print("\U0001f9ee Grading pending picks from previous runs...")
+    try:
+        graded, still_pending = grade_pending_picks()
+        print(f"  ✅ Graded {graded} pick(s); {still_pending} still awaiting final box scores.")
+    except Exception as exc:  # ESPN's endpoints are undocumented; never let this break the run
+        print(f"  ⚠️ Grading failed, continuing without it: {exc}")
+
     print("\U0001f4c2 Loading historical tracked props...")
     history = load_history()
     if history.empty:
