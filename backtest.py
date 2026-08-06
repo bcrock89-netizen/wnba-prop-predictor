@@ -131,6 +131,68 @@ def print_calibration_report(scored, value_col, label, n_buckets=5):
     return grouped
 
 
+def evaluate_matchup_heuristic(train, test):
+    """Tests a model-free 'top picks' heuristic: historical bet-type win rate
+    (computed ONLY from train, so no leakage into test) combined with a
+    side-adjusted opponent-defense matchup score (from Opp Def Rating, also
+    leak-free/pregame). Checks whether this actually predicts hit rate on
+    held-out test data - the same scrutiny already applied to the model's
+    own Edge/probability."""
+    decided_train = train[train["Result"].isin(["WIN", "LOSS"])]
+    decided_test = test[test["Result"].isin(["WIN", "LOSS"])]
+    bet_type_train_wr = decided_train.groupby("Bet Type")["Result"].apply(lambda s: (s == "WIN").mean())
+    bet_type_test_wr = decided_test.groupby("Bet Type")["Result"].apply(lambda s: (s == "WIN").mean())
+
+    print()
+    print("-" * 72)
+    print("BET-TYPE WIN RATE PERSISTENCE: train win rate vs held-out test win rate")
+    print("-" * 72)
+    comparison = pd.DataFrame({"train_win_rate": bet_type_train_wr, "test_win_rate": bet_type_test_wr}).dropna()
+    comparison = comparison.sort_values("train_win_rate", ascending=False)
+    print(f"{'Bet Type':<16}{'train win rate':<18}{'test win rate':<18}")
+    for bet_type, row in comparison.iterrows():
+        print(f"{bet_type:<16}{row['train_win_rate']:<18.1%}{row['test_win_rate']:<18.1%}")
+    correlation = comparison["train_win_rate"].corr(comparison["test_win_rate"])
+    print(f"\nCorrelation between train and test win rate across bet types: {correlation:.2f}")
+    if correlation > 0.3:
+        print("Bet-type win rate shows some persistence out of sample - plausibly a real, usable signal.")
+    else:
+        print(
+            "Bet-type win rate does NOT persist out of sample - a bet type that looked strong in "
+            "train is not reliably strong in test. Not a signal to rank picks on."
+        )
+
+    print()
+    print("-" * 72)
+    print("MATCHUP HEURISTIC: side-adjusted opponent-defense favorability vs hit rate")
+    print("-" * 72)
+    league_avg_pts_allowed = train["Opp Def Rating"].mean()
+    test_scored = test.dropna(subset=["Opp Def Rating"]).copy()
+    deviation = test_scored["Opp Def Rating"] - league_avg_pts_allowed
+    # Over favored by a weak (high points-allowed) opponent defense; Under favored by a strong one.
+    test_scored["matchup_score"] = np.where(test_scored["Side"] == "Over", deviation, -deviation)
+
+    matchup_calib = calibration_by_bucket(test_scored, "matchup_score", n_buckets=5)
+    print(f"{'bucket (matchup_score range)':<32}{'n':<8}{'avg score':<14}{'actual hit rate':<16}")
+    for _, row in matchup_calib.iterrows():
+        bucket_str = f"{row['bucket'].left:.2f} to {row['bucket'].right:.2f}"
+        print(f"{bucket_str:<32}{int(row['n']):<8}{row['avg_value']:<14.2f}{row['hit_rate']:<16.1%}")
+
+    hit_rates = matchup_calib["hit_rate"].to_numpy()
+    spread = hit_rates.max() - hit_rates.min()
+    is_rising = np.all(np.diff(hit_rates) >= -0.02)
+    print()
+    if is_rising and spread > 0.05:
+        print(f"Hit rate rises with matchup favorability (spread {spread:.1%}) - this looks like real signal.")
+    else:
+        print(
+            f"Hit rate does NOT rise cleanly with matchup favorability (spread {spread:.1%}) - "
+            "no clean signal here either on this test set."
+        )
+
+    return comparison, matchup_calib
+
+
 def print_report(baseline, full, train, test, split_date):
     print()
     print("=" * 72)
@@ -182,6 +244,7 @@ def main():
     print_report(baseline_metrics, full_metrics, train, test, split_date)
     print_calibration_report(full_scored, "edge", "Calculated Edge")
     print_calibration_report(full_scored, "model_proba", "model win probability")
+    evaluate_matchup_heuristic(train, test)
 
 
 if __name__ == "__main__":
