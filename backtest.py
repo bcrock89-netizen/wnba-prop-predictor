@@ -193,6 +193,44 @@ def evaluate_matchup_heuristic(train, test):
     return comparison, matchup_calib
 
 
+def evaluate_recent_vs_season_win_rate(split_date, window=10):
+    """Tests a player's own recent hit rate (win rate over their last
+    `window` bets in that Bet Type, leak-free/shifted) as a 'top picks'
+    signal, alongside their season-long (all prior bets, leak-free/shifted)
+    win rate for direct comparison - is recent form a stronger or weaker
+    signal than the simple season-to-date rate?"""
+    print()
+    print("=" * 72)
+    print(f"RECENT (last {window} bets) vs SEASON-LONG per-player win rate")
+    print("=" * 72)
+
+    history = pipeline.load_history()  # local CSV only - no network needed for this one
+    history = history.sort_values("Date").reset_index(drop=True)
+    history["is_win"] = (history["Result"] == "WIN").astype(float)
+    history.loc[history["Result"] == "PUSH", "is_win"] = np.nan
+
+    grouped_is_win = history.groupby(["Player", "Bet Type"])["is_win"]
+    history["recent_win_rate"] = grouped_is_win.transform(lambda s: s.shift(1).rolling(window, min_periods=3).mean())
+    history["season_win_rate"] = grouped_is_win.transform(lambda s: s.shift(1).expanding(min_periods=3).mean())
+
+    test_rows = history[(history["Date"] >= split_date) & (history["Result"] != "PUSH")]
+
+    for col, label in [("recent_win_rate", f"last {window} bets"), ("season_win_rate", "season-long (all prior bets)")]:
+        subset = test_rows.dropna(subset=[col])
+        print(f"\n--- {label} --- (n={len(subset)}/{len(test_rows)} held-out rows with enough prior history)")
+        grouped = calibration_by_bucket(subset, col, n_buckets=5)
+        print(f"{'bucket':<20}{'n':<8}{'avg rate':<14}{'actual hit rate':<16}")
+        for _, row in grouped.iterrows():
+            bucket_str = f"{row['bucket'].left:.1%} to {row['bucket'].right:.1%}"
+            print(f"{bucket_str:<20}{int(row['n']):<8}{row['avg_value']:<14.1%}{row['hit_rate']:<16.1%}")
+
+        hit_rates = grouped["hit_rate"].to_numpy()
+        spread = hit_rates.max() - hit_rates.min()
+        is_rising = np.all(np.diff(hit_rates) >= -0.02)
+        verdict = "RISING - plausible signal" if (is_rising and spread > 0.05) else "flat/non-monotonic - no clean signal"
+        print(f"Spread: {spread:.1%}. Verdict: {verdict}.")
+
+
 def print_report(baseline, full, train, test, split_date):
     print()
     print("=" * 72)
@@ -245,6 +283,7 @@ def main():
     print_calibration_report(full_scored, "edge", "Calculated Edge")
     print_calibration_report(full_scored, "model_proba", "model win probability")
     evaluate_matchup_heuristic(train, test)
+    evaluate_recent_vs_season_win_rate(split_date)
 
 
 if __name__ == "__main__":
