@@ -208,7 +208,11 @@ def fetch_stat_line_for_date(athlete_id, target_date):
     events_meta = data.get("events", {})
     if _GAMELOG_EVENT_DEBUG and events_meta:
         first_id = next(iter(events_meta))
-        print(f"  [espn-debug] sample event metadata (id={first_id}): {json.dumps(events_meta[first_id], default=str)[:1500]}")
+        sample = events_meta[first_id]
+        print(f"  [espn-debug] sample event metadata keys (id={first_id}): {sorted(sample.keys()) if isinstance(sample, dict) else type(sample)}")
+        if isinstance(sample, dict):
+            non_link_fields = {k: v for k, v in sample.items() if k != "links"}
+            print(f"  [espn-debug] sample event metadata (no links): {json.dumps(non_link_fields, default=str)[:1500]}")
         _GAMELOG_EVENT_DEBUG = False
 
     raw_rows = []
