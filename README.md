@@ -30,6 +30,34 @@ dashboard of today's highest-edge props.
    (deployment only happens on `main`; manual runs on other branches still
    exercise the pipeline itself).
 
+## Auto-updating `wnba_historical_props.csv`
+
+Each run, before scoring today's slate, `pipeline.py` first grades
+yesterday's (or older) picks:
+
+1. At the end of a run, the side the model flagged as having **positive
+   edge** that day, at its best available price, is snapshotted to
+   `pending_grades.csv` (one row per prop, not per bookmaker — see
+   `select_best_picks`).
+2. On the *next* run, `grade_pending_picks()` looks up each pending pick's
+   actual final stat line from ESPN's gamelog, computes Result/Stat
+   Value/Profit the same way the rest of `wnba_historical_props.csv` already
+   does (flat $5 stake, American-odds payout), and appends the graded row.
+   A pick whose game hasn't concluded yet, or whose box score ESPN doesn't
+   have yet, is left in `pending_grades.csv` and retried on a later run —
+   never dropped, never guessed at.
+3. The workflow commits and pushes both changed files back to the branch it
+   ran on. **This currently only happens on manual (`workflow_dispatch`)
+   runs, not the daily 9:00 AM schedule** — so nothing pushes to `main`
+   unattended yet. Once this has been watched work correctly over a few
+   manual runs, that restriction can be dropped from
+   `.github/workflows/main.yml`.
+
+DTM and Projection can't be reconstructed for these auto-graded rows (same
+reason DTM is already excluded from the model — see Known limitations
+below), so they're left blank. Neither is a model feature, so this doesn't
+affect training.
+
 ## Data sources
 
 | Source | Used for | Auth |
