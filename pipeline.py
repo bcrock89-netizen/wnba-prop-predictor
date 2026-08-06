@@ -2,6 +2,7 @@ import json
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -10,6 +11,8 @@ from xgboost import XGBClassifier
 
 import espn_client
 import sportsdataverse_client as sdv_client
+
+ET = ZoneInfo("America/New_York")
 
 API_KEY = os.getenv("ODDS_API_KEY")
 SPORT = "basketball_wnba"
@@ -33,7 +36,21 @@ MARKET_TO_BET_TYPE = {
 MARKETS = ",".join(MARKET_TO_BET_TYPE)
 
 HISTORY_FILE = "wnba_historical_props.csv"
+PENDING_GRADES_FILE = "pending_grades.csv"
 OUTPUT_DIR = os.path.join("frontend", "public")
+PENDING_GRADES_COLUMNS = [
+    "Date",
+    "Player",
+    "Matchup",
+    "Commence Time",
+    "Bet Type",
+    "Side",
+    "Line",
+    "Odds",
+    "BE Prob",
+    "Win Probability",
+    "Bookmaker",
+]
 
 # DTM's exact formula in the historical CSV can't be reconstructed from odds alone
 # (it's not a consistent function of Odds/BE Prob in the sample data), so it's left
@@ -385,6 +402,61 @@ def write_predictions(output_dir, predictions_df=None, message=None):
         json.dump(payload, f, indent=2)
 
 
+def game_date_et(commence_time_iso):
+    """The historical CSV's Date column is a plain calendar date (no
+    timezone), which for US sports data conventionally means the US/Eastern
+    local date of the game - so today's picks are stamped the same way,
+    rather than a UTC date that could roll over to the wrong day."""
+    dt = pd.to_datetime(commence_time_iso)
+    if dt.tzinfo is None:
+        dt = dt.tz_localize("UTC")
+    return dt.tz_convert(ET).strftime("%Y-%m-%d")
+
+
+def select_best_picks(todays_slate):
+    """For each (Player, Bet Type), picks the Side with positive Calculated
+    Edge (if any), then the best (most bettor-favorable) American odds for
+    that side across bookmakers - one row per prop. This matches how a real
+    bettor would actually act (shop for the best price on the side they've
+    decided on) and matches wnba_historical_props.csv's existing structure
+    of one row per prop per day, rather than exploding to one row per
+    bookmaker. Returns a DataFrame with PENDING_GRADES_COLUMNS."""
+    picks = []
+    for (player, bet_type), group in todays_slate.groupby(["Player", "Bet Type"]):
+        positive = group[group["Calculated Edge"] > 0]
+        if positive.empty:
+            continue
+        best_side = positive.groupby("Side")["Calculated Edge"].mean().idxmax()
+        side_rows = positive[positive["Side"] == best_side]
+        best_row = side_rows.loc[side_rows["Odds"].idxmax()]
+        picks.append(best_row)
+
+    if not picks:
+        return pd.DataFrame(columns=PENDING_GRADES_COLUMNS)
+
+    result = pd.DataFrame(picks).reset_index(drop=True)
+    result["Date"] = result["Commence Time"].apply(game_date_et)
+    return result[PENDING_GRADES_COLUMNS]
+
+
+def append_pending_grades(picks):
+    """Appends today's best-edge picks to PENDING_GRADES_FILE, so a later run
+    can grade them once results are known. Dedupes on (Date, Player, Bet
+    Type) so re-running the pipeline the same day doesn't create duplicates."""
+    if picks.empty:
+        return 0
+
+    if os.path.exists(PENDING_GRADES_FILE):
+        existing = pd.read_csv(PENDING_GRADES_FILE)
+    else:
+        existing = pd.DataFrame(columns=PENDING_GRADES_COLUMNS)
+
+    combined = pd.concat([existing, picks], ignore_index=True)
+    combined = combined.drop_duplicates(subset=["Date", "Player", "Bet Type"], keep="last")
+    combined.to_csv(PENDING_GRADES_FILE, index=False)
+    return len(combined) - len(existing)
+
+
 def run_prediction_engine():
     print("\U0001f4c2 Loading historical tracked props...")
     history = load_history()
@@ -434,6 +506,10 @@ def run_prediction_engine():
 
     write_predictions(OUTPUT_DIR, predictions_df=todays_slate)
     print(f"✅ Wrote {len(todays_slate)} predictions to {OUTPUT_DIR}/predictions.json")
+
+    picks = select_best_picks(todays_slate)
+    added = append_pending_grades(picks)
+    print(f"\U0001f4dd Snapshotted {len(picks)} best-edge picks for later grading ({added} new).")
 
 
 if __name__ == "__main__":

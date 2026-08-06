@@ -6,9 +6,12 @@ to an empty/None result instead of raising, so a change on ESPN's side never
 takes down the odds/prediction pipeline.
 """
 
+import json
 import re
 import time
 import unicodedata
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -18,6 +21,14 @@ BASE = "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba"
 # athletes/{id}/gamelog returns a clean 404 for WNBA; this v3 "common" API
 # is the real one (confirmed against live data).
 GAMELOG_BASE = "https://site.web.api.espn.com/apis/common/v3/sports/basketball/wnba"
+
+ET = ZoneInfo("America/New_York")
+
+# TEMPORARY: dumps one sample event-metadata entry to confirm the game-date
+# field name against live data, for fetch_stat_line_for_date's date matching.
+# Remove once confirmed working (see PR description / commit history for how
+# fetch_recent_games's shape was confirmed the same way).
+_GAMELOG_EVENT_DEBUG = True
 
 # Bet Type (as used in wnba_historical_props.csv) -> ESPN gamelog stat
 # abbreviation(s) to sum for that bet type. These abbreviations match the
@@ -177,3 +188,46 @@ def recent_form_for_bet_type(recent_games, bet_type):
     if not totals:
         return None
     return sum(totals) / len(totals)
+
+
+def fetch_stat_line_for_date(athlete_id, target_date):
+    """Returns {stat_label: value} for the athlete's game on target_date
+    ('YYYY-MM-DD', US/Eastern local date - matching wnba_historical_props.csv's
+    convention), or None if that game isn't in their gamelog (not yet
+    played, not covered by the gamelog window, or no game that day)."""
+    global _GAMELOG_EVENT_DEBUG
+
+    data = _get(f"{GAMELOG_BASE}/athletes/{athlete_id}/gamelog")
+    if not data:
+        return None
+
+    labels = [str(n).upper() for n in data.get("labels", [])]
+    if not labels:
+        return None
+
+    events_meta = data.get("events", {})
+    if _GAMELOG_EVENT_DEBUG and events_meta:
+        first_id = next(iter(events_meta))
+        print(f"  [espn-debug] sample event metadata (id={first_id}): {json.dumps(events_meta[first_id], default=str)[:1500]}")
+        _GAMELOG_EVENT_DEBUG = False
+
+    raw_rows = []
+    for season_type in data.get("seasonTypes", []):
+        for category in season_type.get("categories", []):
+            raw_rows.extend(category.get("events", []))
+
+    for row in raw_rows:
+        event_id = row.get("eventId")
+        meta = events_meta.get(event_id, {})
+        raw_date = meta.get("gameDate") or meta.get("date") or meta.get("eventDate")
+        if not raw_date:
+            continue
+        try:
+            event_date_et = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00")).astimezone(ET).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+        if event_date_et == target_date:
+            stats = row.get("stats", [])
+            return {label: _parse_stat(v) for label, v in zip(labels, stats) if _parse_stat(v) is not None}
+
+    return None
