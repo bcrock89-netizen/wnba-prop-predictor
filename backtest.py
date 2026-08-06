@@ -16,14 +16,16 @@ does not need ESPN or the Odds API.
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, log_loss, roc_auc_score
-from xgboost import XGBClassifier
+from xgboost import XGBClassifier, XGBRegressor
 
 import pipeline
 
 BASELINE_FEATURES = ["Line", "Odds", "BE Prob"]
 FULL_FEATURES = pipeline.FEATURES
+CONTEXT_FEATURES = ["Recent Form", "Team Pace", "Opp Def Rating", "Back to Back"]
 TEST_FRACTION = 0.2
 STAKE = 100
+MIN_ROWS_PER_BET_TYPE = 50
 
 
 def payout_if_win(odds):
@@ -231,6 +233,79 @@ def evaluate_recent_vs_season_win_rate(split_date, window=10):
         print(f"Spread: {spread:.1%}. Verdict: {verdict}.")
 
 
+def evaluate_regression_approach(dataset, split_date):
+    """Prototype: instead of one binary win/loss classifier pooling every bet
+    type together, fit a SEPARATE regressor per Bet Type to predict the
+    actual Stat Value from context-only features (Recent Form, Team Pace,
+    Opp Def Rating, Back to Back - deliberately excluding Line/Odds/BE Prob,
+    since those describe the bet, not the player, and the point is to test
+    whether context carries information the market hasn't already priced).
+    The prediction is then compared to the book's Line to derive a signed
+    margin, and that margin is calibrated against actual outcomes the same
+    way Edge was checked earlier."""
+    print()
+    print("=" * 72)
+    print("REGRESSION APPROACH: per-bet-type Stat Value prediction vs the Line")
+    print("=" * 72)
+
+    train = dataset[dataset["Date"] < split_date]
+    test = dataset[dataset["Date"] >= split_date]
+
+    all_scored = []
+    print(f"{'Bet Type':<14}{'n train':<10}{'n test':<10}{'book MAE':<12}{'model MAE':<12}{'better'}")
+    for bet_type in sorted(dataset["Bet Type"].unique()):
+        bt_train = train[train["Bet Type"] == bet_type].dropna(subset=CONTEXT_FEATURES + ["Stat Value"])
+        bt_test = test[test["Bet Type"] == bet_type].dropna(subset=CONTEXT_FEATURES + ["Stat Value", "Line"])
+        if len(bt_train) < MIN_ROWS_PER_BET_TYPE or len(bt_test) < 20:
+            print(f"{bet_type:<14}{len(bt_train):<10}{len(bt_test):<10}skipped (too few rows)")
+            continue
+
+        X_train, y_train = bt_train[CONTEXT_FEATURES], bt_train["Stat Value"]
+        X_test, y_test = bt_test[CONTEXT_FEATURES], bt_test["Stat Value"]
+
+        model = XGBRegressor(n_estimators=200, max_depth=3, learning_rate=0.05, random_state=42)
+        model.fit(X_train, y_train)
+        pred = model.predict(X_test)
+
+        book_mae = float((bt_test["Line"] - y_test).abs().mean())
+        model_mae = float(np.abs(pred - y_test.to_numpy()).mean())
+        better = "model" if model_mae < book_mae else "book"
+        print(f"{bet_type:<14}{len(bt_train):<10}{len(bt_test):<10}{book_mae:<12.2f}{model_mae:<12.2f}{better}")
+
+        scored = bt_test.copy()
+        scored["predicted_stat"] = pred
+        scored["predicted_margin"] = np.where(scored["Side"] == "Over", pred - scored["Line"], scored["Line"] - pred)
+        all_scored.append(scored)
+
+    if not all_scored:
+        print("\nNo bet types had enough rows to evaluate.")
+        return
+
+    combined = pd.concat(all_scored, ignore_index=True)
+    combined = combined[combined["Result"] != "PUSH"]
+    print(f"\nCombined held-out rows across all evaluated bet types: {len(combined)}")
+    print(
+        "'book MAE' = how far the book's own Line was from the actual result on average; "
+        "'model MAE' = how far this regressor's prediction was, using ONLY context features "
+        "(no Line/Odds). Lower is better; 'better' names whichever was closer."
+    )
+
+    grouped = calibration_by_bucket(combined, "predicted_margin", n_buckets=5)
+    print(f"\n{'bucket (predicted margin)':<28}{'n':<8}{'avg margin':<14}{'actual hit rate':<16}")
+    for _, row in grouped.iterrows():
+        bucket_str = f"{row['bucket'].left:.2f} to {row['bucket'].right:.2f}"
+        print(f"{bucket_str:<28}{int(row['n']):<8}{row['avg_value']:<14.2f}{row['hit_rate']:<16.1%}")
+
+    hit_rates = grouped["hit_rate"].to_numpy()
+    spread = hit_rates.max() - hit_rates.min()
+    is_rising = np.all(np.diff(hit_rates) >= -0.02)
+    print()
+    if is_rising and spread > 0.05:
+        print(f"Hit rate rises with predicted margin (spread {spread:.1%}) - this looks like real signal.")
+    else:
+        print(f"Hit rate does NOT rise cleanly with predicted margin (spread {spread:.1%}) - still no clean signal.")
+
+
 def print_report(baseline, full, train, test, split_date):
     print()
     print("=" * 72)
@@ -284,6 +359,7 @@ def main():
     print_calibration_report(full_scored, "model_proba", "model win probability")
     evaluate_matchup_heuristic(train, test)
     evaluate_recent_vs_season_win_rate(split_date)
+    evaluate_regression_approach(dataset, split_date)
 
 
 if __name__ == "__main__":
