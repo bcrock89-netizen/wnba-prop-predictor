@@ -457,6 +457,109 @@ def append_pending_grades(picks):
     return len(combined) - len(existing)
 
 
+GRADING_STAKE = 5  # matches the flat-stake convention already used throughout wnba_historical_props.csv's Profit column
+
+
+def _grade_payout(odds, result):
+    if result == "PUSH":
+        return 0.0
+    if result == "LOSS":
+        return -float(GRADING_STAKE)
+    return GRADING_STAKE * (odds / 100) if odds > 0 else GRADING_STAKE * (100 / abs(odds))
+
+
+def grade_pending_picks():
+    """Resolves picks in PENDING_GRADES_FILE against players' actual final
+    stat lines (ESPN gamelogs) and appends graded rows to HISTORY_FILE in its
+    existing schema (Result/Stat Value/Profit computed the same way the rest
+    of that file already is). A pick whose game hasn't concluded yet, or
+    whose box score ESPN doesn't have yet, is left in PENDING_GRADES_FILE and
+    retried on a later run - never dropped, never guessed at.
+
+    DTM and Projection can't be reconstructed for these rows (same reason
+    DTM is excluded from the model - see README), so they're left blank,
+    same as any other missing value in this pipeline. Neither is a model
+    feature, so this doesn't affect training.
+
+    Returns (graded_count, still_pending_count)."""
+    if not os.path.exists(PENDING_GRADES_FILE):
+        return 0, 0
+
+    pending = pd.read_csv(PENDING_GRADES_FILE)
+    if pending.empty:
+        os.remove(PENDING_GRADES_FILE)
+        return 0, 0
+
+    player_id_map = espn_client.fetch_player_id_map()
+    if not player_id_map:
+        print("  ⚠️ Could not load ESPN player rosters; skipping grading this run.")
+        return 0, len(pending)
+
+    graded_rows = []
+    still_pending = []
+    stat_line_cache = {}
+
+    for _, row in pending.iterrows():
+        athlete = player_id_map.get(espn_client.normalize_name(row["Player"]))
+        if not athlete:
+            still_pending.append(row)
+            continue
+
+        cache_key = (athlete["athlete_id"], row["Date"])
+        if cache_key not in stat_line_cache:
+            stat_line_cache[cache_key] = espn_client.fetch_stat_line_for_date(athlete["athlete_id"], row["Date"])
+        game_stats = stat_line_cache[cache_key]
+        if game_stats is None:
+            still_pending.append(row)  # not yet played / not yet in the gamelog - retry next run
+            continue
+
+        stat_keys = espn_client.STAT_KEYS_FOR_BET_TYPE.get(row["Bet Type"])
+        values = [game_stats.get(k) for k in stat_keys] if stat_keys else []
+        if not stat_keys or any(v is None for v in values):
+            still_pending.append(row)  # played, but this stat's missing from the box score - retry next run
+            continue
+
+        stat_value = sum(values)
+        line = row["Line"]
+        if stat_value == line:
+            result = "PUSH"
+        elif (row["Side"] == "Over") == (stat_value > line):
+            result = "WIN"
+        else:
+            result = "LOSS"
+
+        date = pd.to_datetime(row["Date"])
+        graded_rows.append({
+            "Date": row["Date"],
+            "Player": row["Player"],
+            "Bet Type": row["Bet Type"],
+            "Side": row["Side"],
+            "Line": line,
+            "Odds": row["Odds"],
+            "Win Probability": f"{row['Win Probability'] * 100:.1f}%",
+            "DTM": np.nan,
+            "Result": result,
+            "Projection": np.nan,
+            "Stat Value": stat_value,
+            "Profit": round(_grade_payout(row["Odds"], result), 2),
+            "BE Prob": f"{row['BE Prob'] * 100:.1f}%",
+            "Day": date.strftime("%A"),
+            "Month": date.strftime("%Y-%m"),
+        })
+
+    if graded_rows:
+        history = pd.read_csv(HISTORY_FILE)
+        updated = pd.concat([history, pd.DataFrame(graded_rows)], ignore_index=True)
+        updated.to_csv(HISTORY_FILE, index=False)
+
+    if still_pending:
+        pd.DataFrame(still_pending).to_csv(PENDING_GRADES_FILE, index=False)
+    else:
+        os.remove(PENDING_GRADES_FILE)
+
+    return len(graded_rows), len(still_pending)
+
+
 def run_prediction_engine():
     print("\U0001f4c2 Loading historical tracked props...")
     history = load_history()
