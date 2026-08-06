@@ -196,10 +196,6 @@ def enrich_with_live_signals(todays_slate):
         print("  ⚠️ Could not load ESPN player rosters; skipping recent form/injury/team-context enrichment.")
         return todays_slate
 
-    # TEMPORARY: trigger fetch_stat_line_for_date's one-shot event-metadata diagnostic dump
-    _sample_athlete_id = next(iter(player_id_map.values()))["athlete_id"]
-    espn_client.fetch_stat_line_for_date(_sample_athlete_id, "2026-08-01")
-
     injury_map = espn_client.fetch_injury_status_map()
 
     team_box = sdv_client.fetch_team_box(SEASON)

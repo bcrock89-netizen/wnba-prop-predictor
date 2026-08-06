@@ -6,7 +6,6 @@ to an empty/None result instead of raising, so a change on ESPN's side never
 takes down the odds/prediction pipeline.
 """
 
-import json
 import re
 import time
 import unicodedata
@@ -23,12 +22,6 @@ BASE = "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba"
 GAMELOG_BASE = "https://site.web.api.espn.com/apis/common/v3/sports/basketball/wnba"
 
 ET = ZoneInfo("America/New_York")
-
-# TEMPORARY: dumps one sample event-metadata entry to confirm the game-date
-# field name against live data, for fetch_stat_line_for_date's date matching.
-# Remove once confirmed working (see PR description / commit history for how
-# fetch_recent_games's shape was confirmed the same way).
-_GAMELOG_EVENT_DEBUG = True
 
 # Bet Type (as used in wnba_historical_props.csv) -> ESPN gamelog stat
 # abbreviation(s) to sum for that bet type. These abbreviations match the
@@ -195,8 +188,6 @@ def fetch_stat_line_for_date(athlete_id, target_date):
     ('YYYY-MM-DD', US/Eastern local date - matching wnba_historical_props.csv's
     convention), or None if that game isn't in their gamelog (not yet
     played, not covered by the gamelog window, or no game that day)."""
-    global _GAMELOG_EVENT_DEBUG
-
     data = _get(f"{GAMELOG_BASE}/athletes/{athlete_id}/gamelog")
     if not data:
         return None
@@ -206,14 +197,6 @@ def fetch_stat_line_for_date(athlete_id, target_date):
         return None
 
     events_meta = data.get("events", {})
-    if _GAMELOG_EVENT_DEBUG and events_meta:
-        first_id = next(iter(events_meta))
-        sample = events_meta[first_id]
-        print(f"  [espn-debug] sample event metadata keys (id={first_id}): {sorted(sample.keys()) if isinstance(sample, dict) else type(sample)}")
-        if isinstance(sample, dict):
-            non_link_fields = {k: v for k, v in sample.items() if k != "links"}
-            print(f"  [espn-debug] sample event metadata (no links): {json.dumps(non_link_fields, default=str)[:1500]}")
-        _GAMELOG_EVENT_DEBUG = False
 
     raw_rows = []
     for season_type in data.get("seasonTypes", []):
@@ -223,7 +206,7 @@ def fetch_stat_line_for_date(athlete_id, target_date):
     for row in raw_rows:
         event_id = row.get("eventId")
         meta = events_meta.get(event_id, {})
-        raw_date = meta.get("gameDate") or meta.get("date") or meta.get("eventDate")
+        raw_date = meta.get("gameDate")
         if not raw_date:
             continue
         try:
